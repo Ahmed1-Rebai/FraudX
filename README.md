@@ -18,8 +18,8 @@ retrieved from four purpose-built NoSQL stores.
 - Engineering memory (decisions, progress, conventions): [memory.md](memory.md)
 - Original specification: [FraudX_README.md](FraudX_README.md)
 
-> **Status:** Phase 0 (foundation) is complete. The infrastructure,
-> provisioning, contracts, risk engine and health/metrics API are working.
+> **Status:** Phases 0 (foundation) and 1 (datasets) are complete. Infrastructure,
+> provisioning, contracts, risk engine, health/metrics API and the dataset generator work.
 > The data pipeline is next. See [memory.md](memory.md#next-tasks).
 
 ## Quick start
@@ -54,6 +54,7 @@ make check              # ruff lint/format check + unit tests
 make infra              # start only Kafka + databases (+ provisioning)
 make api                # run the API on the host with auto-reload
 make test-integration   # integration tests against the running stack
+make data               # generate the synthetic dataset (data/generated)
 make help               # every command
 ```
 
@@ -86,8 +87,8 @@ fraudx/
 | Phase | Deliverable | Status |
 |---|---|---|
 | 0 | Foundation: infra, schemas, contracts, risk engine, health API | done |
-| 1 | Synthetic generator + PaySim loader → validated enriched events | next |
-| 2 | Kafka producer and consumer framework (DLQ, metrics) | |
+| 1 | Synthetic generator + PaySim loader → validated enriched events | done |
+| 2 | Kafka producer and consumer framework (DLQ, metrics) | next |
 | 3 | Feature processor (Redis online features) | |
 | 4 | Store writers: Cassandra, MongoDB, Neo4j | |
 | 5–7 | Supervised model, anomaly detection, graph features | |

@@ -54,7 +54,8 @@ failed sink never blocks scoring, and any stage can be replayed from Kafka.
 
 | Component | Status | Responsibility |
 |---|---|---|
-| `ingestion` producer | Phase 1–2 | Load PaySim or generate synthetic data, enrich with device/IP/location, publish to `transactions.raw` |
+| `ingestion` datasets | **done** | Deterministic synthetic generator with labelled fraud scenarios; PaySim loader with label-independent enrichment (§12) |
+| `ingestion` producer | Phase 2 | Replay a dataset to `transactions.raw` at a controlled rate |
 | `streaming` feature-processor | Phase 3 | Validate against `TransactionEvent`, dead-letter invalid events, compute online features in Redis, publish `transactions.features` |
 | `storage` writers | Phase 4 | Idempotent sinks: Cassandra history, MongoDB profiles, Neo4j graph |
 | `scoring` scorer | Phase 5–8 | Rules + XGBoost/LightGBM + Isolation Forest + graph features → risk engine |
@@ -234,3 +235,39 @@ Redis, Neo4j, one-shot provisioning jobs (`kafka-init`, `cassandra-init`,
 has a healthcheck; `docker compose up -d --wait` returns once all are healthy
 (about 1–2 minutes after the first image pull). Kubernetes is out of scope for
 the MVP.
+
+## 12. Datasets
+
+`python -m fraudx.ingestion generate|paysim` (or `make data` / `make data-paysim`)
+writes a dataset directory:
+
+| File | Content |
+|---|---|
+| `enriched_transactions.jsonl` | `TransactionEvent` v1 per line, event-time order, validated on write |
+| `ground_truth.csv` | `transaction_id, is_fraud, scenario`, for evaluation only, never published to Kafka |
+| `summary.json` | counts by type/scenario, fraud rate, time range, generation parameters / invalid rows |
+
+**Synthetic generator** (`fraudx.ingestion.generator`). It is a pure function
+of its config and seed. Population: customers with home country, devices, IPs,
+spending profile and contacts; merchants; fraud rings whose mules come from the
+population and share ring devices and IPs. Generation runs in two passes:
+transactions are planned with timestamps, then sorted and replayed against
+account balances, so balances are always consistent.
+
+| Scenario | Label | Behaviour |
+|---|---|---|
+| `account_takeover` | fraud | TRANSFER of 80–100 % of the victim's balance to a mule, from a ring device/IP, mostly at night |
+| `mule_cash_out` | fraud | the mule CASH_OUTs 90–100 % within 5–60 min, same ring device |
+| `card_testing` | fraud | 5–15 payments of 1–20 TND seconds apart from an unknown/ring device abroad, then one large payment |
+| `travel` | legit | days abroad with foreign IPs/locations |
+| `new_device` | legit | a new phone that becomes a known device |
+| `large_purchase` | legit | an occasional purchase 10–30× the usual amount |
+| (shared devices) | legit | ~2 % of customers share a device with family |
+
+Defaults (2,000 customers, 14 days) give about 64k events at about 0.5 % fraud in
+about 2.5 s.
+
+**PaySim loader** (`fraudx.ingestion.paysim`). It maps `step` → event time,
+`nameOrig` → customer/source account and `isFraud` → label. Device, IP and
+location come from a salted hash of the customer id, so they're
+label-independent and add no signal to PaySim.

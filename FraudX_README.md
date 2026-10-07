@@ -854,6 +854,10 @@ Deliverable:
 enriched_transactions.json
 ```
 
+> **Implemented (ADR-013, ADR-017):** `make data` writes
+> `data/generated/enriched_transactions.jsonl` plus `ground_truth.csv` and
+> `summary.json`; `make data-paysim` does the same for a PaySim CSV.
+
 ------------------------------------------------------------------------
 
 ## Phase 2 --- Kafka

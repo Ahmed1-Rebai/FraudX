@@ -3,7 +3,7 @@
 COMPOSE := docker compose
 INFRA := kafka kafka-init mongodb cassandra cassandra-init redis neo4j neo4j-init
 
-.PHONY: help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
+.PHONY: data data-paysim help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -29,6 +29,12 @@ test-integration: ## Integration tests against the running stack (make up)
 	set -a && . ./.env && set +a && uv run pytest -m integration
 
 check: lint test ## Lint + unit tests (run before every commit)
+
+data: ## Generate the synthetic dataset into data/generated (ARGS="--customers 5000")
+	uv run python -m fraudx.ingestion generate $(ARGS)
+
+data-paysim: ## Convert data/raw/PS_log.csv (Kaggle PaySim) into data/processed/paysim
+	uv run python -m fraudx.ingestion paysim $(ARGS)
 
 build: ## Build the application image
 	$(COMPOSE) build

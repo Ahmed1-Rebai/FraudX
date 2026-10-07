@@ -3,7 +3,7 @@
 Persistent project memory. **Read this first** when resuming work; update it
 at the end of every work session (progress, issues, decisions, next tasks).
 
-Last updated: 2026-10-07 (Phase 0, foundation)
+Last updated: 2026-10-07 (Phase 1, data, complete)
 
 ---
 
@@ -91,6 +91,8 @@ make up                 # build + start the whole stack, wait for healthy
 make infra              # only Kafka + 4 databases + provisioning
 make api                # API on the host with reload (port 8000)
 make test-integration   # integration tests against the running stack
+make data              # synthetic dataset -> data/generated (ARGS="--customers 5000 --days 30")
+make data-paysim       # data/raw/PS_log.csv -> data/processed/paysim (ARGS="--limit 100000")
 make ps | logs S=api | topics | cqlsh | mongosh | redis-cli | cypher
 make down               # stop (keep data)   |   make clean  # stop + delete volumes
 ```
@@ -114,10 +116,21 @@ Grafana `:3000`.
 - [x] API: `/health`, `/health/ready` (5 dependencies + topics), `/metrics`
 - [x] Prometheus scraping the API, Grafana with provisioned datasource
 - [x] Tests: 33 unit, 9 integration, all passing; full stack verified healthy
+- [x] **Phase 1, data:** deterministic synthetic generator (`ingestion/generator.py`)
+      with labelled fraud scenarios and overlapping legit noise; PaySim loader
+      (`ingestion/paysim.py`) with label-independent enrichment; atomic
+      dataset writer (`ingestion/dataset.py`); CLI `python -m fraudx.ingestion`;
+      `make data`. Default run: 63,716 events, 316 fraud (0.50 %), 0 invalid, 2.4 s.
+      Tests: 51 unit (18 new), all passing
 
 ## Current progress
 
-**Phase 0 (foundation) complete.** Next is Phase 1 (data).
+**Phase 1 (data) complete.** Next is Phase 2 (Kafka producer and consumer framework).
+
+Default synthetic dataset signal check (fraud vs legit share of events):
+foreign location 91 % vs 15 %, device shared by ≥3 customers 49 % vs 0.9 %,
+night 26 % vs 4 %. The signals are strong but overlapping, so expect high
+model scores on synthetic data. PaySim is the harder benchmark.
 
 ## Known issues
 
@@ -130,6 +143,11 @@ Grafana `:3000`.
   min, mostly Cassandra.
 * Host port 8000 is taken on the main dev machine, so its `.env` sets
   `API_PORT=8001`.
+* The synthetic data is easy to classify by construction. Report model
+  metrics on PaySim as well, and break synthetic results down by `scenario`
+  (ground_truth.csv).
+* Card-testing bursts can run a few minutes past the configured end date.
+  This is harmless.
 * `kafka-ui` has no healthcheck defined yet (dev tool only, not a dependency
   of any service).
 
@@ -318,19 +336,31 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   TRANSFER and CASH_OUT.
 - **Impact:** Phase 5 training scripts and experiment notes in `docs/`.
 
+### ADR-017: Dataset format: JSONL + ground-truth sidecar
+- **Decision:** Datasets are directories with `enriched_transactions.jsonl`
+  (one validated `TransactionEvent` per line), `ground_truth.csv`
+  (`transaction_id, is_fraud, scenario`) and `summary.json`. This replaces
+  the spec's single `enriched_transactions.json`.
+- **Reason:** JSONL streams (no full-file parse), lines map 1:1 to Kafka
+  messages, and partial writes are detectable. The fine-grained `scenario`
+  is evaluation metadata and must not travel with events, where it would be
+  a perfect leak. The event keeps only the binary `is_fraud_label`, which
+  online scoring ignores.
+- **Advantages:** Per-scenario recall analysis, reproducibility (summary
+  stores the full generator config), atomic writes.
+- **Trade-offs:** Three files instead of one.
+- **Impact:** Producer (Phase 2) reads the JSONL; training (Phase 5) joins
+  ground truth by `transaction_id`.
+
 ## Next tasks
 
-1. **Phase 1 – Data:** synthetic generator (`fraudx.ingestion.generator`) with
-   fraud-pattern injection; PaySim loader (`step` → event time, `nameOrig` →
-   customer/account mapping); validate against `TransactionEvent`; write
-   `data/generated/enriched_transactions.jsonl`; unit tests.
-2. **Phase 2 – Kafka:** producer (rate-controlled replay, idempotent
+1. **Phase 2 – Kafka:** producer (rate-controlled replay, idempotent
    producer, `acks=all`), consumer base class (manual commit, DLQ, metrics,
    graceful shutdown); integration test raw → consumer.
-3. **Phase 3 – Feature processor:** Redis sliding windows + profile stats;
+2. **Phase 3 – Feature processor:** Redis sliding windows + profile stats;
    publish `transactions.features`; `FeatureVector` contract.
-4. **Phase 4 – Sinks:** Cassandra, MongoDB, Neo4j writers.
-5. Then ML (5), anomaly (6), graph features (7), scorer + alerts (8),
+3. **Phase 4 – Sinks:** Cassandra, MongoDB, Neo4j writers.
+4. Then ML (5), anomaly (6), graph features (7), scorer + alerts (8),
    explainer (9), API endpoints + dashboard (10), benchmarks + Grafana
    dashboards (11).
 
@@ -346,5 +376,16 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   `httpx2` (import name `httpx2`).
 * Re-enabling propagation on `uvicorn.access` undoes `--no-access-log`; only
   re-route `uvicorn` and `uvicorn.error`.
+* A summary built from a lazy generator must be computed **after** the
+  stream is consumed. The PaySim CLI first reported `invalid_rows: 0`
+  because the metadata dict was evaluated before the writer pulled any rows.
+  `write_dataset` now takes a callable.
+* PaySim's `nameOrig` is almost unique per row (each customer appears about
+  once), so per-customer velocity/history features carry little signal on
+  PaySim. This is one more reason the synthetic generator is the default
+  for the streaming demo.
+* Use stdlib `random.Random(seed)` with no set iteration for determinism:
+  Python's string hashing is randomised per process, so iterating a `set` of
+  ids would make the output differ between runs.
 * Prometheus must scrape `/metrics/` (trailing slash) because the metrics app
   is mounted as a sub-application.
