@@ -18,8 +18,8 @@ retrieved from four purpose-built NoSQL stores.
 - Engineering memory (decisions, progress, conventions): [memory.md](memory.md)
 - Original specification: [FraudX_README.md](FraudX_README.md)
 
-> **Status:** Phases 0 (foundation) and 1 (datasets) are complete. Infrastructure,
-> provisioning, contracts, risk engine, health/metrics API and the dataset generator work.
+> **Status:** Phases 0–2 (foundation, datasets, Kafka runtime) are complete. Infrastructure,
+> provisioning, contracts, risk engine, health/metrics API, dataset generator and Kafka replay/worker runtime work.
 > The data pipeline is next. See [memory.md](memory.md#next-tasks).
 
 ## Quick start
@@ -55,6 +55,8 @@ make infra              # start only Kafka + databases (+ provisioning)
 make api                # run the API on the host with auto-reload
 make test-integration   # integration tests against the running stack
 make data               # generate the synthetic dataset (data/generated)
+make replay             # publish it to transactions.raw (ARGS="--rate 500 --rebase-time")
+make tail T=transactions.raw ARGS="--from-beginning -n 3"
 make help               # every command
 ```
 
@@ -88,8 +90,8 @@ fraudx/
 |---|---|---|
 | 0 | Foundation: infra, schemas, contracts, risk engine, health API | done |
 | 1 | Synthetic generator + PaySim loader → validated enriched events | done |
-| 2 | Kafka producer and consumer framework (DLQ, metrics) | next |
-| 3 | Feature processor (Redis online features) | |
+| 2 | Kafka producer and consumer framework (DLQ, metrics) | done |
+| 3 | Feature processor (Redis online features) | next |
 | 4 | Store writers: Cassandra, MongoDB, Neo4j | |
 | 5–7 | Supervised model, anomaly detection, graph features | |
 | 8 | Scorer service, risk engine integration, alerts | |

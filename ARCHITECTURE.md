@@ -55,7 +55,8 @@ failed sink never blocks scoring, and any stage can be replayed from Kafka.
 | Component | Status | Responsibility |
 |---|---|---|
 | `ingestion` datasets | **done** | Deterministic synthetic generator with labelled fraud scenarios; PaySim loader with label-independent enrichment (§12) |
-| `ingestion` producer | Phase 2 | Replay a dataset to `transactions.raw` at a controlled rate |
+| `ingestion` replay | **done** | Replay a dataset to `transactions.raw`: paced, keyed by customer, labels stripped, optional time rebase |
+| `messaging` runtime | **done** | `EventProducer` + `StreamWorker`: the shared Kafka runtime for every stage (§4.1) |
 | `streaming` feature-processor | Phase 3 | Validate against `TransactionEvent`, dead-letter invalid events, compute online features in Redis, publish `transactions.features` |
 | `storage` writers | Phase 4 | Idempotent sinks: Cassandra history, MongoDB profiles, Neo4j graph |
 | `scoring` scorer | Phase 5–8 | Rules + XGBoost/LightGBM + Isolation Forest + graph features → risk engine |
@@ -92,6 +93,24 @@ checks the topics match `fraudx.core.topics`.
 * **Serialization:** JSON validated by versioned Pydantic models
   (`schema_version`). Changes are additive only; see ADR-010.
 * Production: RF=3, `min.insync.replicas=2`, producer `acks=all` + idempotence.
+
+### 4.1 Worker runtime (`fraudx.messaging`)
+
+Every pipeline stage is a `StreamWorker(handler)`. The handler holds the
+business logic; the worker provides:
+
+| Concern | Behaviour |
+|---|---|
+| Producer | idempotent, `acks=all`, lz4, `linger.ms=10`; waits (never drops) on a full local queue |
+| Offsets | auto-commit off; an offset is recorded only after the handler succeeds; committed every 2 s / 500 msgs, on revoke and on shutdown, **after** `producer.flush()` |
+| Poison messages | handler raises `PermanentError` (e.g. `decode()` fails validation) → original bytes + `dlq.*` headers to `transactions.dlq`, then continue |
+| Transient failures | any other exception → seek back, exponential backoff up to 30 s, retry while still polling (stays in the group, no DLQ flood during an outage) |
+| Shutdown | SIGTERM/SIGINT → finish current message, commit, close |
+| Metrics | `fraudx_consumer_messages_total{outcome}`, processing time, message age (produce→processed latency), `fraudx_consumer_lag` from librdkafka stats, `fraudx_kafka_produced_total` |
+| Health | heartbeat file touched every poll loop; `python -m fraudx.messaging.heartbeat <file> 30` is the container healthcheck |
+
+Ground-truth labels never travel on the live stream: `replay` strips
+`is_fraud_label` unless `--with-labels` is passed for an evaluation run.
 
 ## 5. Data stores: why each one exists
 

@@ -874,6 +874,10 @@ Deliverable:
 PaySim → Kafka → Consumer
 ```
 
+> **Implemented:** `make replay` (or `docker compose run --rm replay`)
+> publishes a dataset to `transactions.raw`; `fraudx.messaging.StreamWorker`
+> is the consumer runtime for every stage (ARCHITECTURE.md §4.1).
+
 ------------------------------------------------------------------------
 
 ## Phase 3 --- NoSQL Storage

@@ -206,6 +206,21 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # One-shot job (profile "jobs"): publish a dataset from ./data to transactions.raw.
+  #   docker compose run --rm replay [--rate 500 --limit 10000]
+  replay:
+    image: fraudx:latest
+    profiles: ["jobs"]
+    entrypoint: ["python", "-m", "fraudx.ingestion", "replay", "--dataset", "data/generated"]
+    command: ["--rate", "200", "--rebase-time"]
+    environment: *app-env
+    volumes:
+      - ./data:/app/data:ro
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    restart: "no"
+
   # --- Observability ----------------------------------------------------------
   prometheus:
     image: prom/prometheus:v3.5.0

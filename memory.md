@@ -3,7 +3,7 @@
 Persistent project memory. **Read this first** when resuming work; update it
 at the end of every work session (progress, issues, decisions, next tasks).
 
-Last updated: 2026-10-07 (Phase 1, data, complete)
+Last updated: 2026-10-07 (Phase 2, Kafka, complete)
 
 ---
 
@@ -93,6 +93,9 @@ make api                # API on the host with reload (port 8000)
 make test-integration   # integration tests against the running stack
 make data              # synthetic dataset -> data/generated (ARGS="--customers 5000 --days 30")
 make data-paysim       # data/raw/PS_log.csv -> data/processed/paysim (ARGS="--limit 100000")
+make replay            # data/generated -> transactions.raw (ARGS="--rate 500 --rebase-time")
+make tail T=transactions.dlq ARGS="--from-beginning -n 5"   # inspect a topic
+docker compose run --rm replay --rate 1000 --limit 5000     # replay from a container
 make ps | logs S=api | topics | cqlsh | mongosh | redis-cli | cypher
 make down               # stop (keep data)   |   make clean  # stop + delete volumes
 ```
@@ -122,10 +125,26 @@ Grafana `:3000`.
       dataset writer (`ingestion/dataset.py`); CLI `python -m fraudx.ingestion`;
       `make data`. Default run: 63,716 events, 316 fraud (0.50 %), 0 invalid, 2.4 s.
       Tests: 51 unit (18 new), all passing
+- [x] Stack recreated with the user's own passwords (the `.env` change needed fresh volumes)
+- [x] **Phase 2, Kafka:** `messaging.producer.EventProducer`,
+      `messaging.consumer.StreamWorker` (manual commits after flush, DLQ,
+      backoff retries, graceful shutdown, metrics, lag, heartbeat),
+      `ingestion.replay` (pacer, label stripping, time rebase), CLIs
+      `python -m fraudx.ingestion replay` and `python -m fraudx.messaging tail`,
+      compose job `replay` (profile `jobs`). Unthrottled replay of the full
+      dataset: 63,716 events in 2.6 s (≈24k events/s), 0 failures, partitions
+      evenly loaded. Tests: 64 unit, 10 integration (incl. a real-broker
+      round trip: replay → worker → DLQ → resume from committed offsets)
 
 ## Current progress
 
-**Phase 1 (data) complete.** Next is Phase 2 (Kafka producer and consumer framework).
+**Phase 2 (Kafka) complete.** Next is Phase 3 (feature processor).
+
+`transactions.raw` currently holds about 65.7k events from test replays: the
+full dataset with original 2026-01 timestamps, plus 2,000 rebased to today.
+The Phase 3 processor (group `fraudx-feature-processor`, earliest offset) will
+consume this backlog on first start. Run `make clean && make up` for an empty
+log.
 
 Default synthetic dataset signal check (fraud vs legit share of events):
 foreign location 91 % vs 15 %, device shared by ≥3 customers 49 % vs 0.9 %,
@@ -336,6 +355,31 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   TRANSFER and CASH_OUT.
 - **Impact:** Phase 5 training scripts and experiment notes in `docs/`.
 
+### ADR-018: Transient errors block the partition; only poison messages go to the DLQ
+- **Decision:** `StreamWorker` dead-letters a message only when the handler
+  raises `PermanentError` (invalid or undecodable input). Any other error
+  rewinds to the message and retries with capped exponential backoff,
+  indefinitely, while continuing to poll.
+- **Reason:** When a database is down, every message fails. Dead-lettering
+  then would empty the stream into the DLQ and need a manual re-drive. Pausing
+  is the correct response to an outage, and Kafka retains the backlog.
+- **Advantages:** No data loss or DLQ flood during outages; recovery is
+  automatic; consumer lag (metric) makes the stall visible.
+- **Trade-offs:** A bug that raises a non-`PermanentError` on one specific
+  message stalls that partition. This is mitigated by alerting on lag and
+  retry counters, and handlers must classify errors carefully.
+- **Impact:** Contract for every handler in Phases 3–9.
+
+### ADR-019: No labels on the live stream
+- **Decision:** `replay` strips `is_fraud_label` by default.
+- **Reason:** Real transaction streams don't carry labels (fraud is
+  confirmed days later). A label on the wire risks leaking into online
+  features. Live "model accuracy" (spec dashboard) will come from joining
+  `ground_truth.csv`, or from a delayed `transactions.labels` feedback topic
+  if needed (simulating chargebacks).
+- **Trade-offs:** Live accuracy needs that join or topic instead of reading
+  the event.
+
 ### ADR-017: Dataset format: JSONL + ground-truth sidecar
 - **Decision:** Datasets are directories with `enriched_transactions.jsonl`
   (one validated `TransactionEvent` per line), `ground_truth.csv`
@@ -354,13 +398,14 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 ## Next tasks
 
-1. **Phase 2 – Kafka:** producer (rate-controlled replay, idempotent
-   producer, `acks=all`), consumer base class (manual commit, DLQ, metrics,
-   graceful shutdown); integration test raw → consumer.
-2. **Phase 3 – Feature processor:** Redis sliding windows + profile stats;
-   publish `transactions.features`; `FeatureVector` contract.
-3. **Phase 4 – Sinks:** Cassandra, MongoDB, Neo4j writers.
-4. Then ML (5), anomaly (6), graph features (7), scorer + alerts (8),
+1. **Phase 3 – Feature processor:** a `StreamWorker` handler on
+   `transactions.raw`: validate (DLQ), Redis sliding windows (5 m / 1 h / 24 h
+   count and amount per customer; device and IP velocity), profile stats
+   (mean/std, known devices/IPs/countries → `new_*` flags), dedupe guard;
+   `FeatureVector` contract; publish `transactions.features`; compose service
+   with heartbeat healthcheck and Prometheus scrape; benchmark events/s per worker.
+2. **Phase 4 – Sinks:** Cassandra, MongoDB, Neo4j writers.
+3. Then ML (5), anomaly (6), graph features (7), scorer + alerts (8),
    explainer (9), API endpoints + dashboard (10), benchmarks + Grafana
    dashboards (11).
 
@@ -387,5 +432,17 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 * Use stdlib `random.Random(seed)` with no set iteration for determinism:
   Python's string hashing is randomised per process, so iterating a `set` of
   ids would make the output differ between runs.
+* **Always `set -o pipefail`** when piping test output (`make … | tail`).
+  Without it, a failing test run reported success to a `&&` chain and a
+  commit went ahead (Phase 1). The commit was sound, but the check was blind.
+* Changing passwords in `.env` after the first start needs fresh volumes:
+  MongoDB and Neo4j only read their credentials on first init.
+* Rate pacers must reset their schedule from *now* after a stall. Otherwise
+  they burst to "catch up" (found by unit test).
+* Never iterate a dict you're popping from (`commit()` bug caught by unit test).
+* librdkafka logs `Coordinator load in progress` right after topic or broker
+  start. This is benign; the idempotent producer retries.
+* A "nothing was redelivered" assertion is vacuous if the consumer may not
+  have joined the group yet. Assert that a *new* message is delivered instead.
 * Prometheus must scrape `/metrics/` (trailing slash) because the metrics app
   is mounted as a sub-application.

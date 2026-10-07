@@ -13,10 +13,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from fraudx.core.config import KafkaSettings
 from fraudx.core.logging import configure_logging
 from fraudx.ingestion import paysim
-from fraudx.ingestion.dataset import write_dataset
+from fraudx.ingestion.dataset import EVENTS_FILE, read_events, write_dataset
 from fraudx.ingestion.generator import GeneratorConfig, TransactionGenerator
+from fraudx.ingestion.replay import prepare, replay
+from fraudx.messaging.producer import EventProducer
 
 log = logging.getLogger("fraudx.ingestion")
 
@@ -71,6 +74,24 @@ def _paysim(args: argparse.Namespace) -> int:
     return 0
 
 
+def _replay(args: argparse.Namespace) -> int:
+    path = args.dataset / EVENTS_FILE
+    if not path.exists():
+        log.error("no dataset at %s; run `make data` first", path)
+        return 2
+    events = prepare(read_events(path), with_labels=args.with_labels, rebase_time=args.rebase_time)
+    with EventProducer(KafkaSettings(), "replay") as producer:
+        report = replay(events, producer, rate=args.rate, limit=args.limit)
+    log.info(
+        "replayed %d events in %.1fs (%.0f events/s), %d delivery failures",
+        report.sent,
+        report.seconds,
+        report.rate,
+        producer.failed,
+    )
+    return 1 if producer.failed else 0
+
+
 def _report(summary: dict, out: Path, started: float) -> None:
     log.info(
         "dataset written to %s: %d events, %d fraud (%.3f%%), %d invalid rows, %.1fs",
@@ -118,6 +139,16 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--limit", type=int, help="read at most N rows")
     ps.add_argument("--start", type=datetime.fromisoformat)
     ps.set_defaults(func=_paysim)
+
+    rp = sub.add_parser("replay", help="publish a dataset to transactions.raw")
+    rp.add_argument("--dataset", type=Path, default=Path("data/generated"))
+    rp.add_argument("--rate", type=float, default=200.0, help="events/s, 0 = unthrottled")
+    rp.add_argument("--limit", type=int)
+    rp.add_argument("--rebase-time", action="store_true", help="shift event times to start now")
+    rp.add_argument(
+        "--with-labels", action="store_true", help="keep is_fraud_label (evaluation runs only)"
+    )
+    rp.set_defaults(func=_replay)
     return parser
 
 

@@ -3,7 +3,7 @@
 COMPOSE := docker compose
 INFRA := kafka kafka-init mongodb cassandra cassandra-init redis neo4j neo4j-init
 
-.PHONY: data data-paysim help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
+.PHONY: data data-paysim replay tail help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -35,6 +35,12 @@ data: ## Generate the synthetic dataset into data/generated (ARGS="--customers 5
 
 data-paysim: ## Convert data/raw/PS_log.csv (Kaggle PaySim) into data/processed/paysim
 	uv run python -m fraudx.ingestion paysim $(ARGS)
+
+replay: ## Publish data/generated to transactions.raw (ARGS="--rate 500 --rebase-time")
+	uv run python -m fraudx.ingestion replay $(ARGS)
+
+tail: ## Print messages from a topic (T=transactions.raw ARGS="--from-beginning -n 5")
+	uv run python -m fraudx.messaging tail $(or $(T),transactions.raw) $(ARGS)
 
 build: ## Build the application image
 	$(COMPOSE) build
