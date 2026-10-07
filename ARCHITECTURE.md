@@ -57,7 +57,7 @@ failed sink never blocks scoring, and any stage can be replayed from Kafka.
 | `ingestion` datasets | **done** | Deterministic synthetic generator with labelled fraud scenarios; PaySim loader with label-independent enrichment (§12) |
 | `ingestion` replay | **done** | Replay a dataset to `transactions.raw`: paced, keyed by customer, labels stripped, optional time rebase |
 | `messaging` runtime | **done** | `EventProducer` + `StreamWorker`: the shared Kafka runtime for every stage (§4.1) |
-| `streaming` feature-processor | Phase 3 | Validate against `TransactionEvent`, dead-letter invalid events, compute online features in Redis, publish `transactions.features` |
+| `streaming` feature-processor | **done** | Validate against `TransactionEvent`, dead-letter invalid events, compute online features in Redis (§5.3), publish `FeaturedTransaction` to `transactions.features` |
 | `storage` writers | Phase 4 | Idempotent sinks: Cassandra history, MongoDB profiles, Neo4j graph |
 | `scoring` scorer | Phase 5–8 | Rules + XGBoost/LightGBM + Isolation Forest + graph features → risk engine |
 | `scoring.risk` | **done** | Weighted, configurable 0–100 score with rule floors and missing-signal handling |
@@ -148,22 +148,51 @@ Natural keys are stored as `_id`. Collections have `$jsonSchema` validators
 | `investigations` | transaction_id | risk breakdown, `evidence`, `explanation`, `status`; indexes `(status, created_at)`, `(customer_id, created_at)` |
 | `model_registry` | `name:version` | metrics, params, artifact path; partial unique index → one active version per model |
 
-### 5.3 Redis key design
+### 5.3 Redis: online feature store (`fraudx.streaming.features`)
 
-All keys of one customer share a hash tag `{customer_id}` so multi-key
-operations stay valid on Redis Cluster. Every key has a TTL.
+Each key family shares one hash tag (`{customer}`, `{device}`, `{ip}`), so
+every Lua script touches a single Redis Cluster slot. Every key has a TTL.
 
-| Key | Type | Content |
-|---|---|---|
-| `fx:cust:{C}:txw` | ZSET | member `tx_id\|amount`, score = event time ms (sliding windows 5 m / 1 h / 24 h) |
-| `fx:cust:{C}:stats` | HASH | count, amount sum, sum of squares (mean / std), last device / IP / country / time |
-| `fx:cust:{C}:devices` / `:ips` / `:countries` | SET | known values → `new_device`, `new_ip`, `new_location` |
-| `fx:cust:{C}:risk` | HASH | latest score, level, transaction id |
-| `fx:dev:{D}:txw`, `fx:ip:{IP}:txw` | ZSET | device / IP velocity |
-| `fx:seen:{tx_id}` | STRING (NX, 24 h) | dedupe guard so replays don't double-count `HINCRBY` |
+| Key | Type | Content | TTL |
+|---|---|---|---|
+| `fx:cust:{C}:txw` | ZSET | member `tx_id\|amount`, score = event time ms | 2 d |
+| `fx:cust:{C}:stats` | HASH | `n`, `sum`, `sumsq` (→ mean/std), `last_ts` | 90 d |
+| `fx:cust:{C}:devices` / `:ips` / `:countries` | SET | known values → `is_new_*` | 90 d |
+| `fx:cust:{C}:result:{tx}` | STRING | cached raw result of this transaction (idempotency) | 7 d |
+| `fx:dev:{D}:txw`, `fx:ip:{IP}:txw` | ZSET | transaction ids by event time (1 h velocity) | 2 d |
+| `fx:dev:{D}:custs`, `fx:ip:{IP}:custs` | SET | distinct customers seen on the device / IP | 30 d |
+| `fx:cust:{C}:risk` | HASH | latest score and level (Phase 8) | 90 d |
 
-Windows use **event time** (the transaction timestamp), so replays and
-backfills produce the same features as live traffic.
+Per event: **one pipelined round trip** of three Lua scripts (customer,
+device, IP). The customer script reads the profile *before* the event,
+inserts the event, computes the windows, updates the profile and caches its
+result atomically. A redelivered transaction hits the cache and returns
+identical features without touching the counters. Device/IP scripts only use
+idempotent operations.
+
+Windows are evaluated at the transaction's **event time** and include only
+transactions up to that instant. Replays, backfills and late events therefore
+produce the same values as live traffic.
+
+**Features (`TransactionFeatures`, `FEATURE_VERSION = 1`).** Window
+values include the current transaction; profile values describe the
+customer before it.
+
+| Feature | Definition |
+|---|---|
+| `cust_txn_count_{5m,1h,24h}`, `cust_amount_sum_{5m,1h,24h}` | customer velocity and spend in event-time windows |
+| `cust_history_count`, `cust_amount_mean`, `cust_amount_std` | profile before this transaction |
+| `amount_zscore`, `amount_to_mean_ratio` | deviation from the customer's usual amount |
+| `seconds_since_last_txn` | gap to the latest earlier transaction (null for the first or a late one) |
+| `is_new_device`, `is_new_ip`, `is_new_country` | value never seen for this customer before |
+| `device_txn_count_1h`, `device_customer_count` | device velocity; distinct customers on the device (30 d) |
+| `ip_txn_count_1h`, `ip_customer_count` | same for the IP |
+| `balance_drain_ratio` | amount / source balance for debits |
+| `hour_of_day` | UTC hour |
+
+Measured on the default dataset: one worker processes about 2,000 events/s
+(≈0.5 ms per event including the Redis round trip and produce). Scaling is
+horizontal, up to one worker per partition (6).
 
 ### 5.4 Neo4j (`infra/neo4j/schema.cypher`)
 
@@ -239,7 +268,7 @@ level = HIGH if score ≥ 70, MEDIUM if ≥ 30, else LOW         (config/risk.ya
 | Concern | Local | Scale-out |
 |---|---|---|
 | Kafka | 1 broker, 6 partitions | 3+ brokers, RF=3; up to 6 consumers per group without re-partitioning |
-| Stream processing | 1 feature-processor | N replicas in one consumer group; state lives in Redis, so workers are stateless |
+| Stream processing | 1 feature-processor (~2k events/s) | `--scale feature-processor=6`; state lives in Redis, so workers are stateless. Next lever: batch consume + one pipeline per batch |
 | Redis | single node | Redis Cluster (keys are already hash-tagged per customer) |
 | Cassandra | 1 node, RF=1 | multi-node, NetworkTopologyStrategy RF=3 |
 | MongoDB | standalone | replica set, then shard `investigations` by `customer_id` if needed |

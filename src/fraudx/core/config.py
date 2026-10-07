@@ -11,6 +11,7 @@ are tuned by analysts and versioned with the code, not per deployment.
 
 from __future__ import annotations
 
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -31,6 +32,15 @@ class AppSettings(BaseSettings):
     log_format: Literal["json", "text"] = "json"
     risk_config_path: Path = Path("config/risk.yaml")
     dependency_timeout_s: float = Field(default=3.0, gt=0)
+
+
+class WorkerSettings(BaseSettings):
+    """Runtime settings shared by every stream worker process."""
+
+    model_config = SettingsConfigDict(**_ENV, env_prefix="WORKER_")
+
+    metrics_port: int = 9100
+    heartbeat_path: Path = Path(tempfile.gettempdir()) / "fraudx" / "heartbeat"
 
 
 class KafkaSettings(BaseSettings):

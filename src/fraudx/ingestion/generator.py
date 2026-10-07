@@ -30,18 +30,17 @@ from random import Random
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from fraudx.core.schemas import Balances, Location, TransactionEvent, TransactionType
+from fraudx.core.schemas import (
+    DEBIT_TYPES,
+    Balances,
+    Location,
+    TransactionEvent,
+    TransactionType,
+)
 from fraudx.ingestion import geo
 
 CENT = Decimal("0.01")
-DEBITS = frozenset(
-    {
-        TransactionType.PAYMENT,
-        TransactionType.TRANSFER,
-        TransactionType.CASH_OUT,
-        TransactionType.DEBIT,
-    }
-)
+DEBITS = DEBIT_TYPES
 FRAUD_SCENARIOS = ("account_takeover", "mule_cash_out", "card_testing")
 LEGIT_SCENARIOS = ("normal", "travel", "new_device", "large_purchase")
 

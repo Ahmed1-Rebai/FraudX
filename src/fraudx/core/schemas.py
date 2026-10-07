@@ -35,6 +35,17 @@ class TransactionType(StrEnum):
     DEBIT = "DEBIT"
 
 
+# Types that move money out of the source account.
+DEBIT_TYPES = frozenset(
+    {
+        TransactionType.PAYMENT,
+        TransactionType.TRANSFER,
+        TransactionType.CASH_OUT,
+        TransactionType.DEBIT,
+    }
+)
+
+
 class RiskLevel(StrEnum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
@@ -84,6 +95,54 @@ class TransactionEvent(_Contract):
     def partition_key(self) -> bytes:
         """Kafka key: per-customer ordering keeps velocity windows consistent."""
         return self.customer_id.encode()
+
+
+FEATURE_VERSION = 1
+
+
+class TransactionFeatures(_Contract):
+    """Online features computed as of the transaction's event time.
+
+    Window counts/sums include the current transaction. ``cust_*`` profile
+    values (history count, mean, std, known devices...) describe the customer
+    *before* this transaction. Bump ``FEATURE_VERSION`` when a definition changes.
+    """
+
+    cust_txn_count_5m: int = Field(ge=1)
+    cust_txn_count_1h: int = Field(ge=1)
+    cust_txn_count_24h: int = Field(ge=1)
+    cust_amount_sum_5m: float = Field(ge=0)
+    cust_amount_sum_1h: float = Field(ge=0)
+    cust_amount_sum_24h: float = Field(ge=0)
+    cust_history_count: int = Field(ge=0)
+    cust_amount_mean: float | None = None
+    cust_amount_std: float | None = None
+    amount_zscore: float | None = None
+    amount_to_mean_ratio: float | None = None
+    seconds_since_last_txn: float | None = None
+    is_new_device: bool
+    is_new_ip: bool
+    is_new_country: bool
+    device_txn_count_1h: int = Field(default=0, ge=0)
+    device_customer_count: int = Field(default=0, ge=0)
+    ip_txn_count_1h: int = Field(default=0, ge=0)
+    ip_customer_count: int = Field(default=0, ge=0)
+    balance_drain_ratio: float | None = Field(default=None, ge=0)
+    hour_of_day: int = Field(ge=0, le=23)
+
+
+class FeaturedTransaction(_Contract):
+    """A validated transaction with its online features (``transactions.features``)."""
+
+    schema_version: int = SCHEMA_VERSION
+    feature_version: int = FEATURE_VERSION
+    event: TransactionEvent
+    features: TransactionFeatures
+    processed_at: AwareDatetime
+
+    @property
+    def partition_key(self) -> bytes:
+        return self.event.partition_key
 
 
 class RiskAssessment(_Contract):

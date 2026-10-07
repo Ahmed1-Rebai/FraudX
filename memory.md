@@ -3,7 +3,7 @@
 Persistent project memory. **Read this first** when resuming work; update it
 at the end of every work session (progress, issues, decisions, next tasks).
 
-Last updated: 2026-10-07 (Phase 2, Kafka, complete)
+Last updated: 2026-10-07 (Phase 3, feature processor, complete)
 
 ---
 
@@ -135,16 +135,35 @@ Grafana `:3000`.
       dataset: 63,716 events in 2.6 s (≈24k events/s), 0 failures, partitions
       evenly loaded. Tests: 64 unit, 10 integration (incl. a real-broker
       round trip: replay → worker → DLQ → resume from committed offsets)
+- [x] **Phase 3, feature processor:** `TransactionFeatures` /
+      `FeaturedTransaction` contracts (v1); `streaming.features`
+      (`OnlineFeatureStore`: 3 Lua scripts in one pipelined round trip,
+      event-time windows, result cache for idempotency, pure
+      `build_features`); `streaming.processor` (validation → DLQ, label
+      stripping); `python -m fraudx.streaming`; compose service
+      `feature-processor` with heartbeat healthcheck; Prometheus DNS discovery.
+      Backlog of 65,716 events processed at ≈2,050 events/s on one worker,
+      0 dead-lettered. Tests: 75 unit, 16 integration
 
 ## Current progress
 
-**Phase 2 (Kafka) complete.** Next is Phase 3 (feature processor).
+**Phase 3 (feature processor) complete.** Next is Phase 4 (store writers).
 
-`transactions.raw` currently holds about 65.7k events from test replays: the
-full dataset with original 2026-01 timestamps, plus 2,000 rebased to today.
-The Phase 3 processor (group `fraudx-feature-processor`, earliest offset) will
-consume this backlog on first start. Run `make clean && make up` for an empty
-log.
+`transactions.raw` and `transactions.features` each hold 65,716 events (the
+full dataset with 2026-01 timestamps, plus 2,000 rebased to today). Redis
+holds the matching online state.
+
+Feature signal on the default dataset (mean per scenario, from
+`transactions.features` joined with ground truth):
+
+| scenario | txns in 5 min | customers on device | balance drain | new device | amount z-score |
+|---|---|---|---|---|---|
+| account_takeover | 1.0 | 6.7 | 0.91 | 100 % | 62 |
+| mule_cash_out | 1.0 | 8.2 | 0.95 | 21 % | 268 |
+| card_testing | 5.9 | 3.2 | 0.03 | 9 % | 5 |
+| large_purchase (legit) | 1.0 | 1.1 | 0.34 | 6 % | 35 |
+| new_device (legit) | 1.0 | 1.0 | 0.05 | 95 % | 0.1 |
+| normal | 1.0 | 1.07 | 0.04 | 4 % | 0.3 |
 
 Default synthetic dataset signal check (fraud vs legit share of events):
 foreign location 91 % vs 15 %, device shared by ≥3 customers 49 % vs 0.9 %,
@@ -355,6 +374,28 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   TRANSFER and CASH_OUT.
 - **Impact:** Phase 5 training scripts and experiment notes in `docs/`.
 
+### ADR-020: Online features in Lua with a per-transaction result cache
+- **Decision:** Compute features inside Redis with Lua scripts (customer,
+  device, IP), sent in one pipelined round trip. The customer script caches
+  its raw result under `fx:cust:{C}:result:{tx}` (TTL = raw-topic retention);
+  a redelivery returns the cached result. Windows use event time. Feature
+  definitions are versioned (`FEATURE_VERSION`).
+- **Reason:** Read-modify-write over several keys must be atomic, or two
+  updates interleave and features drift. Counters like `HINCRBY` aren't
+  idempotent, and at-least-once delivery will redeliver. One round trip per
+  event keeps latency at about 0.5 ms. This replaces the planned `fx:seen:{tx}`
+  flag: a flag alone would prevent double counting but couldn't return the
+  original features.
+- **Advantages:** Exactly-once *effect* on top of at-least-once delivery;
+  identical output on replay; Redis Cluster compatible (one slot per script).
+- **Trade-offs:** Business logic split between Lua (state updates) and Python
+  (`build_features`, kept pure and unit-tested). Lua is covered by
+  integration tests against real Redis. Device/IP windows aren't covered by
+  the cache. They're idempotent, but a redelivery read after newer events can
+  see a slightly higher device count.
+- **Impact:** ARCHITECTURE §5.3. Changing a feature means bumping
+  `FEATURE_VERSION` and retraining models.
+
 ### ADR-018: Transient errors block the partition; only poison messages go to the DLQ
 - **Decision:** `StreamWorker` dead-letters a message only when the handler
   raises `PermanentError` (invalid or undecodable input). Any other error
@@ -398,14 +439,15 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 ## Next tasks
 
-1. **Phase 3 – Feature processor:** a `StreamWorker` handler on
-   `transactions.raw`: validate (DLQ), Redis sliding windows (5 m / 1 h / 24 h
-   count and amount per customer; device and IP velocity), profile stats
-   (mean/std, known devices/IPs/countries → `new_*` flags), dedupe guard;
-   `FeatureVector` contract; publish `transactions.features`; compose service
-   with heartbeat healthcheck and Prometheus scrape; benchmark events/s per worker.
-2. **Phase 4 – Sinks:** Cassandra, MongoDB, Neo4j writers.
-3. Then ML (5), anomaly (6), graph features (7), scorer + alerts (8),
+1. **Phase 4 – Store writers:**
+   - `graph-writer` on `transactions.features`: idempotent `MERGE` of
+     Customer/Account/Device/IP/Location and aggregated edges, batched with
+     `UNWIND`, guarded against double-counted edge counters.
+   - Cassandra and MongoDB writers consume `transactions.scored`, which
+     doesn't exist until Phase 8. Options: build them now against
+     `transactions.features` with risk columns null, or move them after the
+     scorer. Decide at the start of Phase 4.
+2. Then ML (5), anomaly (6), graph features (7), scorer + alerts (8),
    explainer (9), API endpoints + dashboard (10), benchmarks + Grafana
    dashboards (11).
 
@@ -444,5 +486,10 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   start. This is benign; the idempotent producer retries.
 * A "nothing was redelivered" assertion is vacuous if the consumer may not
   have joined the group yet. Assert that a *new* message is delivered instead.
+* Integration tests that share Redis must make **every** key run-unique,
+  IPs included. A fixed test IP accumulated customers across runs and broke
+  a distinct-count assertion.
+* Redis Lua: return floats via `cjson.encode`; a bare Lua number is truncated
+  to an integer reply. Use `cjson.null` (not `nil`) to keep a key in the table.
 * Prometheus must scrape `/metrics/` (trailing slash) because the metrics app
   is mounted as a sub-application.
