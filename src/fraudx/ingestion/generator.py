@@ -9,9 +9,23 @@ with labelled fraud scenarios injected into otherwise normal behaviour:
 * ``card_testing`` - a burst of tiny payments from an unknown device abroad,
   followed by one large payment.
 
+Hard cases (generator v2, ADR-023), built to need more than per-customer
+velocity features:
+
+* ``app_scam`` - authorised push-payment fraud: the victim, on their *own*
+  device, at home, in daytime, transfers 3-12x their usual amount to a mule.
+  Only the destination (a ring mule) gives it away.
+* ``account_takeover_local`` - a new device in the victim's home country, at
+  normal hours, drains 40-70 % to a mule: unusual for the customer, nothing
+  foreign or nocturnal.
+* ``mule_slow_drip`` - the mule cashes out in 2-4 chunks over hours, from
+  their personal device, staying under velocity thresholds.
+
 Legitimate behaviour deliberately overlaps with fraud signals (travel abroad,
 new phones, families sharing a device, occasional large purchases, mules with
-ordinary activity) so no single feature separates the classes.
+ordinary activity, ``legit_burst`` of quick purchases that looks like card
+testing, ``new_payee`` transfers that look exactly like ``app_scam``) so no
+single feature, and no single detector, separates the classes.
 
 Generation is two-pass: all transactions are first planned with their
 timestamps, then sorted and replayed against account balances so balances are
@@ -24,7 +38,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from random import Random
 
@@ -41,8 +55,15 @@ from fraudx.ingestion import geo
 
 CENT = Decimal("0.01")
 DEBITS = DEBIT_TYPES
-FRAUD_SCENARIOS = ("account_takeover", "mule_cash_out", "card_testing")
-LEGIT_SCENARIOS = ("normal", "travel", "new_device", "large_purchase")
+FRAUD_SCENARIOS = (
+    "account_takeover",
+    "mule_cash_out",
+    "card_testing",
+    "app_scam",
+    "account_takeover_local",
+    "mule_slow_drip",
+)
+LEGIT_SCENARIOS = ("normal", "travel", "new_device", "large_purchase", "legit_burst", "new_payee")
 
 # Relative activity per hour of day (people sleep; fraudsters prefer night).
 _DAY_HOURS = (1, 1, 1, 1, 1, 2, 4, 6, 8, 9, 9, 10, 11, 10, 9, 9, 10, 11, 12, 12, 10, 7, 4, 2)
@@ -77,8 +98,12 @@ class GeneratorConfig(BaseModel):
 
     # Fraud
     victim_share: float = Field(default=0.03, ge=0, le=0.5)
-    ato_weight: float = Field(default=0.6, ge=0)
-    card_testing_weight: float = Field(default=0.4, ge=0)
+    # Relative weights of the incident types (v1 easy: ato, card testing;
+    # v2 hard: app, local takeover). Set the v2 weights to 0 for v1 data.
+    ato_weight: float = Field(default=0.25, ge=0)
+    card_testing_weight: float = Field(default=0.20, ge=0)
+    app_weight: float = Field(default=0.35, ge=0)
+    ato_local_weight: float = Field(default=0.20, ge=0)
     rings: int = Field(default=5, ge=1)
     ring_size_min: int = Field(default=3, ge=2)
     ring_size_max: int = Field(default=6, ge=2)
@@ -88,12 +113,16 @@ class GeneratorConfig(BaseModel):
     new_device_rate: float = Field(default=0.005, ge=0, le=1)
     large_purchase_rate: float = Field(default=0.005, ge=0, le=1)
     shared_device_share: float = Field(default=0.02, ge=0, le=1)
+    burst_rate: float = Field(default=0.01, ge=0, le=1)  # per customer-day
+    new_payee_rate: float = Field(default=0.003, ge=0, le=1)  # per customer-day
 
     @model_validator(mode="after")
     def _check(self) -> GeneratorConfig:
         if self.ring_size_min > self.ring_size_max:
             raise ValueError("ring_size_min must be <= ring_size_max")
-        if self.ato_weight + self.card_testing_weight <= 0:
+        weights = (self.ato_weight, self.card_testing_weight, self.app_weight,
+                   self.ato_local_weight)  # fmt: skip
+        if sum(weights) <= 0:
             raise ValueError("at least one fraud pattern weight must be positive")
         if self.start.tzinfo is None:
             raise ValueError("start must be timezone-aware")
@@ -171,6 +200,7 @@ class TransactionGenerator:
         """Yield transactions in event-time order."""
         self._build_population()
         plans = self._plan_legit()
+        plans += self._plan_lookalikes()
         plans += self._plan_fraud()
         plans.sort(key=lambda p: (p.time, p.seq))
         yield from self._execute(plans)
@@ -312,13 +342,132 @@ class TransactionGenerator:
         for victim in victims:
             start = self._time_on(rng.randrange(cfg.days), _NIGHT_HOURS)
             pattern = rng.choices(
-                ("account_takeover", "card_testing"), (cfg.ato_weight, cfg.card_testing_weight)
+                ("account_takeover", "card_testing", "app_scam", "account_takeover_local"),
+                (cfg.ato_weight, cfg.card_testing_weight, cfg.app_weight, cfg.ato_local_weight),
             )[0]
             if pattern == "account_takeover":
                 plans += self._plan_takeover(victim, start)
-            else:
+            elif pattern == "card_testing":
                 plans += self._plan_card_testing(victim, start)
+            elif pattern == "app_scam":
+                plans += self._plan_app_scam(victim, start.date())
+            else:
+                plans += self._plan_local_takeover(victim, start.date())
         return plans
+
+    def _day_index(self, day: date) -> int:
+        return (day - self.config.start.date()).days
+
+    def _plan_app_scam(self, victim: _Customer, day: date) -> list[_Plan]:
+        """Victim is manipulated into paying a mule: everything looks like them."""
+        rng = self.rng
+        mule = rng.choice(rng.choice(self.rings).mules)
+        start = self._time_on(self._day_index(day), _DAY_HOURS)
+        transfer = _Plan(
+            time=start,
+            seq=self._next_seq(),
+            tx_type=TransactionType.TRANSFER,
+            customer=victim,
+            destination=mule.account,
+            device=victim.devices[0],
+            ip=rng.choice(victim.ips),
+            country=victim.country,
+            city=victim.city,
+            scenario="app_scam",
+            amount=_money(victim.mean_amount * rng.uniform(3, 12)),
+        )
+        return [transfer, *self._plan_slow_drip(mule, start)]
+
+    def _plan_local_takeover(self, victim: _Customer, day: date) -> list[_Plan]:
+        """Takeover from a fresh device inside the victim's own country."""
+        rng = self.rng
+        mule = rng.choice(rng.choice(self.rings).mules)
+        start = self._time_on(self._day_index(day), _DAY_HOURS)
+        transfer = _Plan(
+            time=start,
+            seq=self._next_seq(),
+            tx_type=TransactionType.TRANSFER,
+            customer=victim,
+            destination=mule.account,
+            device=self._device(),
+            ip=geo.random_ip(rng, victim.country),
+            country=victim.country,
+            city=geo.random_city(rng, victim.country),
+            scenario="account_takeover_local",
+            fraction=(0.4, 0.7),
+        )
+        return [transfer, *self._plan_slow_drip(mule, start)]
+
+    def _plan_slow_drip(self, mule: _Customer, after: datetime) -> list[_Plan]:
+        """Mule withdraws in a few chunks over hours from their personal device."""
+        rng = self.rng
+        personal = mule.devices[1] if len(mule.devices) > 1 else mule.devices[0]
+        plans, t = [], after
+        for _ in range(rng.randint(2, 4)):
+            t += timedelta(hours=rng.uniform(1, 18))
+            plans.append(
+                _Plan(
+                    time=t,
+                    seq=self._next_seq(),
+                    tx_type=TransactionType.CASH_OUT,
+                    customer=mule,
+                    destination=rng.choice(self.merchants),
+                    device=personal,
+                    ip=mule.ips[0],
+                    country=mule.country,
+                    city=mule.city,
+                    scenario="mule_slow_drip",
+                    fraction=(0.2, 0.45),
+                )
+            )
+        return plans
+
+    def _plan_lookalikes(self) -> list[_Plan]:
+        """Legitimate behaviour that mimics the fraud patterns."""
+        cfg, rng = self.config, self.rng
+        plans: list[_Plan] = []
+        for customer in self.customers:
+            for day in range(cfg.days):
+                if rng.random() < cfg.burst_rate:  # e.g. several stalls at a market
+                    t = self._time_on(day, _DAY_HOURS)
+                    for _ in range(rng.randint(3, 8)):
+                        t += timedelta(seconds=rng.uniform(20, 120))
+                        plans.append(self._own_plan(
+                            customer, t, TransactionType.PAYMENT, rng.choice(self.merchants),
+                            "legit_burst", customer.mean_amount * rng.uniform(0.1, 0.6),
+                        ))  # fmt: skip
+                if rng.random() < cfg.new_payee_rate:  # rent, a car, family abroad
+                    payee = rng.choice(self.customers).account
+                    if payee != customer.account and payee not in customer.contacts:
+                        plans.append(self._own_plan(
+                            customer, self._time_on(day, _DAY_HOURS), TransactionType.TRANSFER,
+                            payee, "new_payee", customer.mean_amount * rng.uniform(3, 12),
+                        ))  # fmt: skip
+        return plans
+
+    def _own_plan(
+        self,
+        customer: _Customer,
+        time: datetime,
+        tx_type: TransactionType,
+        destination: str,
+        scenario: str,
+        amount: float,
+    ) -> _Plan:
+        """A transaction from the customer's usual device, IP and home location."""
+        return _Plan(
+            time=time,
+            seq=self._next_seq(),
+            tx_type=tx_type,
+            customer=customer,
+            destination=destination,
+            device=customer.devices[0],
+            ip=self.rng.choice(customer.ips),
+            country=customer.country,
+            city=customer.city,
+            scenario=scenario,
+            amount=_money(max(amount, 1.0)),
+        )
 
     def _plan_takeover(self, victim: _Customer, start: datetime) -> list[_Plan]:
         rng = self.rng

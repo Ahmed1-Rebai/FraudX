@@ -351,13 +351,19 @@ account balances, so balances are always consistent.
 | `account_takeover` | fraud | TRANSFER of 80–100 % of the victim's balance to a mule, from a ring device/IP, mostly at night |
 | `mule_cash_out` | fraud | the mule CASH_OUTs 90–100 % within 5–60 min, same ring device |
 | `card_testing` | fraud | 5–15 payments of 1–20 TND seconds apart from an unknown/ring device abroad, then one large payment |
+| `app_scam` | fraud | **v2.** Authorised push payment: the victim's own device and IP, home country, daytime, transfer 3–12× usual to a ring mule. Only the payee is suspicious |
+| `account_takeover_local` | fraud | **v2.** New device but home country and normal hours; 40–70 % drain to a mule |
+| `mule_slow_drip` | fraud | **v2.** The mule CASH_OUTs 20–45 % in 2–4 chunks, 1–18 h apart, from their personal device |
 | `travel` | legit | days abroad with foreign IPs/locations |
 | `new_device` | legit | a new phone that becomes a known device |
 | `large_purchase` | legit | an occasional purchase 10–30× the usual amount |
+| `legit_burst` | legit | **v2.** 3–8 quick small purchases (looks like card testing) |
+| `new_payee` | legit | **v2.** transfer 3–12× usual to a non-contact (looks exactly like `app_scam`) |
 | (shared devices) | legit | ~2 % of customers share a device with family |
 
-Defaults (2,000 customers, 14 days) give about 64k events at about 0.5 % fraud in
-about 2.5 s.
+Incident mix (weights): takeover 0.25, card testing 0.20, APP scam 0.35, local
+takeover 0.20. Set the v2 weights to 0 for v1-style data. Defaults (2,000
+customers, 14 days) give 65,292 events at 0.41 % fraud in about 2 s.
 
 **PaySim loader** (`fraudx.ingestion.paysim`). It maps `step` → event time,
 `nameOrig` → customer/source account and `isFraud` → label. Device, IP and

@@ -3,7 +3,7 @@
 Persistent project memory. **Read this first** when resuming work; update it
 at the end of every work session (progress, issues, decisions, next tasks).
 
-Last updated: 2026-10-07 (Phase 5, supervised model, complete)
+Last updated: 2026-10-07 (generator v2 + model retrained; real datasets pending)
 
 ---
 
@@ -168,26 +168,41 @@ Grafana `:3000`.
       processor now runs in batch mode (`compute_many`). The image has
       `libgomp1` for LightGBM (467 MB). Model `fraud_lgbm:20261007140119-b6deb82e`
       trained and **active**. Tests: 92 unit, 24 integration
+- [x] **Generator v2 (ADR-023):** hard fraud cases (`app_scam`,
+      `account_takeover_local`, `mule_slow_drip`) and legitimate look-alikes
+      (`legit_burst`, `new_payee`); v1 behaviour available by zero weights.
+      Both datasets regenerated; model retrained:
+      `fraud_lgbm:20261007200714-47e7e074` **active** (v1 model still
+      registered for rollback). Tests: 97 unit, 24 integration
 
 ## Current progress
 
-**Phase 5 (supervised model) complete.** Next: decide on generator v2
-(see "Next tasks"), then Phase 6 (anomaly detection).
+**Phase 5 + generator v2 complete.** Next: integrate public datasets
+(ADR-024, waiting on the user's Kaggle access), then Phase 6 (anomaly
+detection).
 
-Model `fraud_lgbm:20261007140119-b6deb82e` (report:
-`docs/experiments/2026-10-07-fraud_lgbm-20261007140119-b6deb82e.md`):
-training set 327,819 events / 843 fraud; best iteration 56; threshold 0.14.
+**Datasets (v2):** demo `data/generated` 65,292 events / 265 fraud (0.41 %);
+training `data/training/synthetic` 336,653 / 684 (0.20 %).
+⚠ The **live stack still holds v1 demo data** (replayed earlier). Reset with
+`make clean && make up && make replay` to stream v2 (this also wipes the
+MongoDB model registry: re-run `make train`).
 
-| set | PR-AUC | precision | recall | Brier |
-|---|---|---|---|---|
-| test (last 15 % by time) | 0.999 | 0.978 | 0.985 | 0.00012 |
-| holdout (demo dataset, other seed) | 0.9985 | 0.972 | 0.984 | 0.00020 |
+Active model `fraud_lgbm:20261007200714-47e7e074` (report in
+`docs/experiments/`), trained on v2:
 
-69 % of the gain comes from `cust_txn_count_5m` (card testing), followed by
-`device_customer_count` (9 %) and `balance_drain_ratio` (6 %). Both
-candidates reach validation PR-AUC 1.0, so the selection can't tell them
-apart. **These numbers validate the pipeline, not real-world performance:**
-the generator's fraud scenarios are separable by construction (see ADR-023).
+| set | PR-AUC | precision | recall |
+|---|---|---|---|
+| test | 0.775 | 0.793 | 0.697 |
+| holdout (demo v2) | 0.905 | 0.865 | 0.868 |
+| *v1 model on v1 data, for comparison* | *0.999* | *0.978* | *0.985* |
+
+Test recall by scenario: app_scam **0 %** (needs the graph detector),
+mule_slow_drip 58 %, card_testing 87.5 %, takeovers and mule cash-out 100 %
+(only 3–6 cases each). FPR: new_payee 1.4 %, large_purchase 1.6 %,
+legit_burst 0.07 %. Without balance features PR-AUC falls 0.775 → 0.617.
+Candidates now differ (validation 0.72 unweighted vs 0.61 weighted). The
+holdout scores higher than test because its scenario mix holds more
+card testing.
 
 Store contents after the backlog (65,716 events, of which 2,000 are a
 rebased re-send of existing ids):
@@ -463,7 +478,38 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 - **Impact:** `fraudx.ml`; the scorer (Phase 8) loads the active registry
   version with `FraudModel`.
 
-### ADR-023: Synthetic metrics are near-perfect, so the generator needs harder cases (proposed, not implemented)
+### ADR-024: Public datasets: PaySim for the supervised benchmark, IBM AML for the graph (proposed)
+- **Context:** The user wants real-world value beyond our generator. There
+  is no openly licensed dataset of *real* bank transactions with customer,
+  device and account identities (privacy). The options are:
+  - [PaySim](https://www.kaggle.com/datasets/ealaxi/paysim1): 6.3 M
+    transactions, synthetic but simulated from aggregated real mobile-money
+    logs of an African operator (Lopez-Rojas et al., EMSS 2016). It is the
+    spec's dataset. It has no device/IP data, and `nameOrig` is almost
+    unique per row.
+  - IBM AML ([Altman et al., NeurIPS 2023](https://proceedings.neurips.cc/paper_files/paper/2023/hash/5f38404edff6f3f642d6fa5892479c42-Abstract.html)):
+    synthetic transactions between individuals, companies and banks,
+    calibrated to real data, with labelled laundering patterns (fan-in,
+    fan-out, cycles…). HI-Small has about 2 % illicit transactions. It is
+    graph-native.
+  - [IEEE-CIS / Vesta](https://ieee-dataport.org/documents/ieee-cis-fraud-detection):
+    real e-commerce data, but anonymised and released under Kaggle
+    *competition* rules (use for the competition). Not suitable as the core
+    of a published project.
+- **Proposal:** Use three data sources, each for what it proves:
+  - the generator v2 (end-to-end demo, controlled scenarios, per-detector
+    contribution);
+  - PaySim (supervised benchmark on simulator data calibrated on real logs,
+    with the balance-leakage ablation);
+  - IBM AML (graph detector benchmark on calibrated laundering patterns).
+  Loaders map each into `TransactionEvent`. IBM AML needs new payment types
+  and currencies: an additive schema change.
+- **Blocker:** Kaggle needs the user's account (API token in
+  `~/.kaggle/kaggle.json`, or manual download into `data/raw/`). Check each
+  dataset's license on its Kaggle page before redistributing anything.
+  Datasets stay git-ignored.
+
+### ADR-023: Synthetic metrics are near-perfect, so the generator needs harder cases (implemented: generator v2)
 - **Observation:** Test PR-AUC 0.999 and holdout 0.9985. Every v1 fraud
   scenario has a decisive signature: card testing → `cust_txn_count_5m`;
   takeover → shared ring device + balance drain; mule → drain + shared device.
@@ -477,7 +523,9 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   - legitimate bursts (e.g. several quick purchases);
   - legitimate large transfers to new payees.
   Then retrain and report per-detector contribution.
-- **Status:** Awaiting the user's decision.
+- **Status:** Implemented. Model metrics on v2 (test PR-AUC 0.775,
+  app_scam recall 0) now leave measurable room for the anomaly and graph
+  detectors.
 
 ### ADR-021: Store writers are batched; they run on `transactions.features` until the scorer exists
 - **Decision:** (a) Add a batch mode to `StreamWorker` (batch handler
@@ -561,9 +609,12 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 ## Next tasks
 
-1. **Decision:** generator v2 with hard cases (ADR-023), recommended
-   *before* Phases 6–7 so the anomaly and graph detectors can show measurable
-   value. Afterwards rerun `make data-train && make features && make train`.
+1. **Public datasets (ADR-024):** once the user provides Kaggle access:
+   - verify `fraudx.ingestion.paysim` on the real file; build PaySim
+     features and train/evaluate (including the balance ablation);
+   - write an IBM AML loader (inspect the real schema first) with additive
+     schema changes for payment types and currencies, for the graph
+     benchmark.
 2. **Phase 6 – Anomaly detection:** Isolation Forest trained on legitimate
    traffic only, from the same feature matrix; scores calibrated to [0, 1]
    (e.g. rank against a validation reference); registered like the
@@ -621,6 +672,9 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   pipeline gives identical per-customer results (verified by an integration
   test) at about 3× the throughput.
 * LightGBM wheels need `libgomp1` at runtime; `python:3.12-slim` lacks it.
+* A test assertion like `... or True` or `... or len(x) > 1` is
+  vacuous. Assert what the code actually guarantees (e.g. "the customer's
+  primary device", not "a device the stream has already seen").
 * Near-perfect metrics on synthetic data are a property of the generator,
   not a success of the model. Always break results down by scenario and ask
   what makes them separable.

@@ -1,6 +1,7 @@
 from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal
+from itertools import pairwise
 
 import pytest
 from pydantic import ValidationError
@@ -126,3 +127,84 @@ def test_card_testing_is_a_burst_of_small_payments(generated):
 def test_config_rejects_impossible_population():
     with pytest.raises(ValidationError, match="not enough customers"):
         GeneratorConfig(customers=20, rings=10, ring_size_max=6)
+
+
+# --- generator v2: hard cases -------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def v2(generated):
+    gen, rows = generated
+    devices_before: dict[str, set] = defaultdict(set)
+    first_use: dict[str, bool] = {}
+    for g in rows:  # was the device already known to the customer at this point?
+        e = g.event
+        first_use[e.transaction_id] = e.device_id not in devices_before[e.customer_id]
+        devices_before[e.customer_id].add(e.device_id)
+    homes = {c.id: c.country for c in gen.customers}
+    return gen, rows, first_use, homes
+
+
+def test_app_scam_looks_like_the_victim(v2):
+    gen, rows, _, homes = v2
+    mule_accounts = {m.account for ring in gen.rings for m in ring.mules}
+    primary = {c.id: c.devices[0] for c in gen.customers}
+    apps = [g.event for g in rows if g.scenario == "app_scam"]
+    assert apps
+    for e in apps:
+        assert e.transaction_type is TransactionType.TRANSFER
+        assert e.device_id == primary[e.customer_id]  # the victim's own phone
+        assert e.location.country == homes[e.customer_id]  # at home
+        assert e.destination_account in mule_accounts  # only the payee is suspicious
+
+
+def test_local_takeover_is_new_device_at_home(v2):
+    _, rows, first_use, homes = v2
+    local = [g.event for g in rows if g.scenario == "account_takeover_local"]
+    assert local
+    for e in local:
+        assert first_use[e.transaction_id]
+        assert e.location.country == homes[e.customer_id]
+        drained = e.amount / e.balances.source_before
+        assert Decimal("0.39") <= drained <= Decimal("0.71")
+
+
+def test_slow_drip_spreads_cash_outs_over_hours(v2):
+    _, rows, _, _ = v2
+    drips = defaultdict(list)
+    for g in rows:
+        if g.scenario == "mule_slow_drip":
+            drips[g.event.customer_id].append(g.event)
+    assert drips
+    gaps = []
+    for events in drips.values():
+        assert all(e.transaction_type is TransactionType.CASH_OUT for e in events)
+        gaps += [b.event_time - a.event_time for a, b in pairwise(events)]
+    # Chunks of one incident are >= 1 h apart; only interleaved incidents of
+    # the same mule can be closer, so the large majority of gaps is long.
+    assert gaps
+    assert sum(gap >= timedelta(minutes=30) for gap in gaps) / len(gaps) >= 0.8
+
+
+def test_lookalikes_are_legit_and_mimic_fraud(v2):
+    gen, rows, first_use, _ = v2
+    bursts = [g.event for g in rows if g.scenario == "legit_burst"]
+    payees = [g.event for g in rows if g.scenario == "new_payee"]
+    assert bursts and payees
+    assert not any(e.is_fraud_label for e in bursts + payees)
+    contacts = {c.account: set(c.contacts) for c in gen.customers}
+    for e in payees:
+        assert e.transaction_type is TransactionType.TRANSFER
+        assert e.destination_account not in contacts[e.source_account]
+    # Own device: already known to the stream unless it is the customer's
+    # very first transaction in the dataset.
+    own = bursts + payees + [g.event for g in rows if g.scenario == "app_scam"]
+    assert sum(not first_use[e.transaction_id] for e in own) / len(own) >= 0.9
+
+
+def test_v1_profile_is_still_available():
+    v1 = SMALL.model_copy(update={"app_weight": 0, "ato_local_weight": 0,
+                                  "burst_rate": 0, "new_payee_rate": 0})  # fmt: skip
+    scenarios = {g.scenario for g in TransactionGenerator(v1).generate()}
+    assert not scenarios & {"app_scam", "account_takeover_local", "mule_slow_drip",
+                            "legit_burst", "new_payee"}  # fmt: skip
