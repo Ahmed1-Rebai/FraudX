@@ -119,7 +119,7 @@ class DependencyProbe:
         def connect() -> Any:
             cluster = clients.cassandra_cluster(settings, self._timeout_s)
             try:
-                return cluster, clients.cassandra_session(cluster, settings)
+                return cluster, clients.cassandra_session(cluster)
             except Exception:
                 cluster.shutdown()
                 raise

@@ -50,6 +50,10 @@ single, defensible responsibility.
 Each arrow out of a topic is an **independent consumer group**: a slow or
 failed sink never blocks scoring, and any stage can be replayed from Kafka.
 
+> **Until the scorer exists (Phase 8)**, the history and profile writers
+> consume `transactions.features` and leave risk columns unset (ADR-021).
+> Then they switch to `transactions.scored`.
+
 ## 3. Components
 
 | Component | Status | Responsibility |
@@ -58,7 +62,7 @@ failed sink never blocks scoring, and any stage can be replayed from Kafka.
 | `ingestion` replay | **done** | Replay a dataset to `transactions.raw`: paced, keyed by customer, labels stripped, optional time rebase |
 | `messaging` runtime | **done** | `EventProducer` + `StreamWorker`: the shared Kafka runtime for every stage (§4.1) |
 | `streaming` feature-processor | **done** | Validate against `TransactionEvent`, dead-letter invalid events, compute online features in Redis (§5.3), publish `FeaturedTransaction` to `transactions.features` |
-| `storage` writers | Phase 4 | Idempotent sinks: Cassandra history, MongoDB profiles, Neo4j graph |
+| `storage` writers | **done** | `graph-writer` (Neo4j), `history-writer` (Cassandra), `profile-writer` (MongoDB): batched, idempotent sinks, `python -m fraudx.storage graph\|history\|profile` |
 | `scoring` scorer | Phase 5–8 | Rules + XGBoost/LightGBM + Isolation Forest + graph features → risk engine |
 | `scoring.risk` | **done** | Weighted, configurable 0–100 score with rule floors and missing-signal handling |
 | `alerts` | Phase 8 | Deliver alerts from `fraud.alerts` |
@@ -105,6 +109,7 @@ business logic; the worker provides:
 | Offsets | auto-commit off; an offset is recorded only after the handler succeeds; committed every 2 s / 500 msgs, on revoke and on shutdown, **after** `producer.flush()` |
 | Poison messages | handler raises `PermanentError` (e.g. `decode()` fails validation) → original bytes + `dlq.*` headers to `transactions.dlq`, then continue |
 | Transient failures | any other exception → seek back, exponential backoff up to 30 s, retry while still polling (stays in the group, no DLQ flood during an outage) |
+| Batch mode | `batch_handler` gets up to `batch_size` (500) messages and returns its rejects for the DLQ; an exception rewinds every partition in the batch. Used by the store writers, whose writes are idempotent |
 | Shutdown | SIGTERM/SIGINT → finish current message, commit, close |
 | Metrics | `fraudx_consumer_messages_total{outcome}`, processing time, message age (produce→processed latency), `fraudx_consumer_lag` from librdkafka stats, `fraudx_kafka_produced_total` |
 | Health | heartbeat file touched every poll loop; `python -m fraudx.messaging.heartbeat <file> 30` is the container healthcheck |
@@ -132,17 +137,23 @@ One table per query; money is `decimal`; newest-first clustering.
 | `risk_events_by_day` | `(event_date, bucket)` | `event_time DESC, transaction_id` | alert feed; `bucket = hash(tx) % 8` avoids a hot daily partition |
 
 Time-series tables use `TimeWindowCompactionStrategy` (1-day windows).
-Writers use `LOCAL_QUORUM` in production (RF=3).
+The history writer prepares keyspace-qualified statements, writes both
+tables with concurrent async upserts at `LOCAL_QUORUM`, and binds missing
+values as `UNSET` (never `null`). That avoids tombstones and means a later
+stage's risk columns are never erased by a re-write.
 
 ### 5.2 MongoDB (`infra/mongodb/init.js`)
 
 Natural keys are stored as `_id`. Collections have `$jsonSchema` validators
 (`validationLevel: moderate`). The API connects as a least-privilege user
-(`readWrite` on `fraudx` only).
+(`readWrite` on `fraudx` only). The profile writer uses unordered bulk
+aggregation-pipeline upserts that are idempotent and order-insensitive:
+min/max timestamps, recency lists, and no counters (counts live in Redis and
+Cassandra).
 
 | Collection | `_id` | Notable fields / indexes |
 |---|---|---|
-| `customers` | customer_id | `devices`, `known_ips` (capped at 50), `risk_profile{score,level}`; index `(risk_profile.level, risk_profile.score)` |
+| `customers` | customer_id | `devices`, `known_ips`, `countries` (50 most recent, deduplicated), `accounts`, `country`, `first_seen`/`last_seen`, `risk_profile{score,level}`; index `(risk_profile.level, risk_profile.score)` |
 | `accounts` | account_id | `customer_id` (indexed), `kind` CUSTOMER/MERCHANT |
 | `devices` | device_id | first/last seen, metadata |
 | `investigations` | transaction_id | risk breakdown, `evidence`, `explanation`, `status`; indexes `(status, created_at)`, `(customer_id, created_at)` |
@@ -208,7 +219,14 @@ Transactions are **aggregated onto edges**, not stored as nodes (ADR-004);
 the graph grows with entities, not events. Merchants are `Account` nodes with
 `kind = "MERCHANT"`. `fraud_flag` on Customer/Account (from labels or analyst
 confirmation) drives `fraud_neighbor_count` and `distance_to_known_fraud`.
-Uniqueness constraints on every id back the `MERGE` writes.
+Uniqueness constraints on every id back the `MERGE` writes. The graph
+writer runs three `UNWIND` statements per batch in one transaction. Edge
+counters only advance when the event is newer than the edge's `last_seen`.
+Counted edges always include the event's own customer or account, whose
+events arrive in order on one partition, so redelivery never double-counts.
+`CASH_IN` edges point from the agent/merchant to the customer (direction of
+money). Merchant accounts are high-degree hubs; graph features should
+exclude `kind = "MERCHANT"` from traversals.
 
 ## 6. Scoring
 

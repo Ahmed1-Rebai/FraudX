@@ -18,9 +18,9 @@ retrieved from four purpose-built NoSQL stores.
 - Engineering memory (decisions, progress, conventions): [memory.md](memory.md)
 - Original specification: [FraudX_README.md](FraudX_README.md)
 
-> **Status:** Phases 0–3 (foundation, datasets, Kafka runtime, online features) are complete.
-> Events flow from replay through the feature processor into `transactions.features`.
-> The data pipeline is next. See [memory.md](memory.md#next-tasks).
+> **Status:** Phases 0–4 are complete: replayed transactions flow through Kafka, get online
+> features in Redis, and land in Cassandra, MongoDB and Neo4j.
+> Machine learning (Phase 5) is next. See [memory.md](memory.md#next-tasks).
 
 ## Quick start
 
@@ -92,8 +92,8 @@ fraudx/
 | 1 | Synthetic generator + PaySim loader → validated enriched events | done |
 | 2 | Kafka producer and consumer framework (DLQ, metrics) | done |
 | 3 | Feature processor (Redis online features) | done |
-| 4 | Store writers: Cassandra, MongoDB, Neo4j | next |
-| 5–7 | Supervised model, anomaly detection, graph features | |
+| 4 | Store writers: Cassandra, MongoDB, Neo4j | done |
+| 5–7 | Supervised model, anomaly detection, graph features | next |
 | 8 | Scorer service, risk engine integration, alerts | |
 | 9 | Evidence-grounded explanations (template / LLM) | |
 | 10 | API endpoints and React dashboard | |

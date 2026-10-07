@@ -68,8 +68,10 @@ def cassandra_cluster(settings: CassandraSettings, timeout_s: float = 3.0) -> Cl
     )
 
 
-def cassandra_session(cluster: Cluster, settings: CassandraSettings) -> Session:
-    return cluster.connect(settings.keyspace)
+def cassandra_session(cluster: Cluster) -> Session:
+    """A session without a default keyspace: statements use qualified names
+    (``keyspace.table``), as recommended for prepared statements."""
+    return cluster.connect()
 
 
 def neo4j_driver(settings: Neo4jSettings, timeout_s: float = 3.0) -> Driver:

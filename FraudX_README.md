@@ -896,6 +896,10 @@ Deliverable:
 
 All four databases receive appropriate data.
 
+> **Implemented (ADR-021):** the feature processor fills Redis; the
+> `graph-writer`, `history-writer` and `profile-writer` services fill Neo4j,
+> Cassandra and MongoDB from `transactions.features`.
+
 ------------------------------------------------------------------------
 
 ## Phase 4 --- Stream Processing

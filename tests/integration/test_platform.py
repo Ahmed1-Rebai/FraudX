@@ -40,7 +40,7 @@ def mongo():
 def cassandra():
     settings = CassandraSettings()
     cluster = clients.cassandra_cluster(settings, timeout_s=10)
-    yield clients.cassandra_session(cluster, settings)
+    yield clients.cassandra_session(cluster)
     cluster.shutdown()
 
 

@@ -3,7 +3,7 @@
 Persistent project memory. **Read this first** when resuming work; update it
 at the end of every work session (progress, issues, decisions, next tasks).
 
-Last updated: 2026-10-07 (Phase 3, feature processor, complete)
+Last updated: 2026-10-07 (Phase 4, store writers, complete)
 
 ---
 
@@ -144,14 +144,33 @@ Grafana `:3000`.
       `feature-processor` with heartbeat healthcheck; Prometheus DNS discovery.
       Backlog of 65,716 events processed at ≈2,050 events/s on one worker,
       0 dead-lettered. Tests: 75 unit, 16 integration
+- [x] **Phase 4, store writers:** `StreamWorker` batch mode; `storage.graph_writer`
+      (Neo4j, 3 × UNWIND per batch, ordered-guard counters),
+      `storage.history_writer` (Cassandra, concurrent prepared upserts,
+      UNSET for missing values, keyspace-qualified), `storage.profile_writer`
+      (MongoDB bulk pipeline upserts, bounded recency lists); `storage.sink`
+      batch handler; `python -m fraudx.storage graph|history|profile`; three
+      compose services sharing an `x-worker` anchor; Prometheus discovers all
+      workers with a `service` label. Money is now quantized to 2 dp in the
+      contract. Backlog drained by all three writers in under 30 s; handler
+      cost 0.35–0.39 ms/msg (≈2.5–2.9k msg/s per writer). Tests: 84 unit,
+      21 integration
 
 ## Current progress
 
-**Phase 3 (feature processor) complete.** Next is Phase 4 (store writers).
+**Phase 4 (store writers) complete.** All four databases are populated by
+the pipeline. Next is Phase 5 (supervised model).
 
-`transactions.raw` and `transactions.features` each hold 65,716 events (the
-full dataset with 2026-01 timestamps, plus 2,000 rebased to today). Redis
-holds the matching online state.
+Store contents after the backlog (65,716 events, of which 2,000 are a
+rebased re-send of existing ids):
+- Cassandra: 63,716 rows in `transactions_by_id` (the duplicates upserted)
+- MongoDB: 2,000 customers, 2,000 accounts, 2,856 devices
+- Neo4j: 2,000 Customer, 2,200 Account (200 merchants), 2,856 Device,
+  3,973 IP, 21 Location; 56,681 TRANSFERRED_TO, 2,944 USES, 5,105
+  CONNECTED_FROM. 7 devices are used by ≥3 customers (max 15): the fraud
+  rings and their takeover victims, already visible in the graph.
+
+Feature signal from Phase 3 (unchanged):
 
 Feature signal on the default dataset (mean per scenario, from
 `transactions.features` joined with ground truth):
@@ -181,6 +200,18 @@ model scores on synthetic data. PaySim is the harder benchmark.
   min, mostly Cassandra.
 * Host port 8000 is taken on the main dev machine, so its `.env` sets
   `API_PORT=8001`.
+* `customers.country` is the first country seen, so a customer whose first
+  transaction happened abroad gets the wrong home country (e.g. `C-000663`
+  → AE). The stream has no KYC data. Fix by sourcing home country from
+  customer master data, or deriving it as the modal country from Cassandra
+  in a batch job.
+* The 2,000 rebased test events (same ids, new times) appear twice in
+  `transactions_by_customer` and advanced Neo4j edge counters. This is an
+  artifact of re-sending the same dataset; `make clean && make up` resets it.
+* A MongoDB validation failure inside a bulk write is treated as transient,
+  so a schema bug would stall the profile writer (visible as lag) rather
+  than dead-letter. Map write errors back to messages if this becomes a
+  problem.
 * The synthetic data is easy to classify by construction. Report model
   metrics on PaySim as well, and break synthetic results down by `scenario`
   (ground_truth.csv).
@@ -374,6 +405,23 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   TRANSFER and CASH_OUT.
 - **Impact:** Phase 5 training scripts and experiment notes in `docs/`.
 
+### ADR-021: Store writers are batched; they run on `transactions.features` until the scorer exists
+- **Decision:** (a) Add a batch mode to `StreamWorker` (batch handler
+  returns rejects; any exception rewinds the whole batch). (b) Run the
+  Cassandra and MongoDB writers on `transactions.features` now, with risk
+  columns unset, and switch them to `transactions.scored` in Phase 8. The
+  graph writer stays on `.features` permanently.
+- **Reason:** One store round trip per message caps sinks at a few hundred
+  messages/s; batching gets about 2.5–2.9k/s per writer. Running the writers
+  now fills all four stores early (the spec's Phase 3 deliverable), so
+  ML/graph work and benchmarks have real data. Unset (not null) columns let
+  the scored stream add risk later without conflicts.
+- **Advantages:** Throughput; early end-to-end data; idempotent writes make
+  batch retries safe.
+- **Trade-offs:** A batch retry rewrites up to 500 records; one input-topic
+  switch later (a config change plus a consumer-group offset decision).
+- **Impact:** `fraudx.storage.*`, compose writer services.
+
 ### ADR-020: Online features in Lua with a per-transaction result cache
 - **Decision:** Compute features inside Redis with Lua scripts (customer,
   device, IP), sent in one pipelined round trip. The customer script caches
@@ -439,15 +487,17 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 ## Next tasks
 
-1. **Phase 4 – Store writers:**
-   - `graph-writer` on `transactions.features`: idempotent `MERGE` of
-     Customer/Account/Device/IP/Location and aggregated edges, batched with
-     `UNWIND`, guarded against double-counted edge counters.
-   - Cassandra and MongoDB writers consume `transactions.scored`, which
-     doesn't exist until Phase 8. Options: build them now against
-     `transactions.features` with risk columns null, or move them after the
-     scorer. Decide at the start of Phase 4.
-2. Then ML (5), anomaly (6), graph features (7), scorer + alerts (8),
+1. **Phase 5 – Supervised model (offline training, separate from inference):**
+   - Training set: read `transactions.features` from the beginning (the
+     exact online features, so no training/serving skew) and join with
+     `data/generated/ground_truth.csv` by `transaction_id`. Optionally build
+     PaySim features through the same processor path.
+   - Time-based split, LightGBM or XGBoost (pick one; justify in an ADR),
+     class imbalance handling, PR-AUC primary metric plus precision, recall,
+     F1 and ROC-AUC; per-scenario recall; ablation without balance features.
+   - Versioned artifact in `models/` and a `model_registry` document in
+     MongoDB (one active version); experiment report in `docs/experiments/`.
+2. Then anomaly (6), graph features (7), anomaly (6), graph features (7), scorer + alerts (8),
    explainer (9), API endpoints + dashboard (10), benchmarks + Grafana
    dashboards (11).
 
@@ -491,5 +541,10 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   a distinct-count assertion.
 * Redis Lua: return floats via `cjson.encode`; a bare Lua number is truncated
   to an integer reply. Use `cjson.null` (not `nil`) to keep a key in the table.
+* Cassandra warns that `USE <keyspace>` with prepared statements is an
+  anti-pattern. Connect without a keyspace and use `keyspace.table`.
+* Pydantic `decimal_places` validates but doesn't normalise: `100` stayed
+  `100` (not `100.00`) all the way into Cassandra. Quantize money in the
+  contract.
 * Prometheus must scrape `/metrics/` (trailing slash) because the metrics app
   is mounted as a sub-application.

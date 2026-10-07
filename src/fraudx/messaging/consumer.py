@@ -16,6 +16,12 @@ Error policy:
 * Any other exception is treated as transient (e.g. a database is down): the
   partition is rewound to the failed message and retried with exponential
   backoff. Polling continues, so the worker stays in its consumer group.
+
+Batch mode (``batch_handler`` + ``batch_size``) serves store writers: the
+handler receives up to ``batch_size`` messages, writes them together and
+returns the messages it rejects as permanent (→ DLQ). Raising any exception
+rewinds every partition in the batch and retries the whole batch, so batch
+writes must be idempotent.
 """
 
 from __future__ import annotations
@@ -66,6 +72,12 @@ class MessageHandler(Protocol):
     def __call__(self, message: Message) -> None: ...
 
 
+class BatchHandler(Protocol):
+    def __call__(self, messages: list[Message]) -> list[tuple[Message, PermanentError]]:
+        """Process a batch; return the (message, error) pairs to dead-letter."""
+        ...
+
+
 def decode[M: BaseModel](message: Message, model: type[M]) -> M:
     """Parse a JSON message value into ``model`` or raise ``PermanentError``."""
     value = message.value()
@@ -108,7 +120,7 @@ class StreamWorker:
         self,
         name: str,
         topics: list[str],
-        handler: MessageHandler,
+        handler: MessageHandler | None,
         settings: KafkaSettings,
         producer: EventProducer,
         group_id: str | None = None,
@@ -119,8 +131,14 @@ class StreamWorker:
         max_backoff_s: float = 30.0,
         consumer: Any = None,
         clock: Callable[[], float] = time.monotonic,
+        batch_handler: BatchHandler | None = None,
+        batch_size: int = 500,
     ) -> None:
+        if (handler is None) == (batch_handler is None):
+            raise ValueError("provide exactly one of handler / batch_handler")
         self.name = name
+        self.batch_handler = batch_handler
+        self.batch_size = batch_size
         self.topics = topics
         self.group_id = group_id or f"fraudx-{name}"
         self.handler = handler
@@ -163,10 +181,17 @@ class StreamWorker:
         )
         try:
             while not self._stop.is_set():
-                msg = self._consumer.poll(1.0)
-                self._heartbeat()
-                if msg is not None:
-                    self._dispatch(msg)
+                if self.batch_handler is not None:
+                    batch = self._consumer.consume(self.batch_size, 1.0)
+                    self._heartbeat()
+                    usable = [m for m in batch if self._usable(m)]
+                    if usable:
+                        self.process_batch(usable)
+                else:
+                    msg = self._consumer.poll(1.0)
+                    self._heartbeat()
+                    if msg is not None and self._usable(msg):
+                        self.process(msg)
                 self._maybe_commit()
         finally:
             try:
@@ -184,16 +209,16 @@ class StreamWorker:
 
     # --- processing ----------------------------------------------------------------
 
-    def _dispatch(self, msg: Message) -> None:
+    def _usable(self, msg: Message) -> bool:
         err = msg.error()
-        if err is not None:
-            if err.code() == KafkaError._PARTITION_EOF:
-                return
-            if err.fatal():
-                raise KafkaException(err)
-            log.warning("consumer error", extra={"worker": self.name, "error": str(err)})
-            return
-        self.process(msg)
+        if err is None:
+            return True
+        if err.code() == KafkaError._PARTITION_EOF:
+            return False
+        if err.fatal():
+            raise KafkaException(err)
+        log.warning("consumer error", extra={"worker": self.name, "error": str(err)})
+        return False
 
     def process(self, msg: Message) -> None:
         topic, partition, offset = msg.topic(), msg.partition(), msg.offset()
@@ -206,36 +231,71 @@ class StreamWorker:
             self._dead_letter(msg, exc)
             outcome = "dlq"
         except Exception as exc:
-            attempt = self._attempts.get(key, 0) + 1
-            self._attempts[key] = attempt
-            backoff = min(self.max_backoff_s, 0.5 * 2 ** (attempt - 1))
-            log.warning(
-                "handler failed, will retry",
-                exc_info=attempt == 1,
-                extra={
-                    "worker": self.name,
-                    "topic": topic,
-                    "partition": partition,
-                    "offset": offset,
-                    "attempt": attempt,
-                    "backoff_s": backoff,
-                    "error": f"{type(exc).__name__}: {exc}",
-                },
-            )
-            MESSAGES.labels(self.name, topic, "retry").inc()
-            self._consumer.seek(TopicPartition(topic, partition, offset))
-            self._stop.wait(backoff)
+            self._retry_later([msg], exc)
             return
 
         self._attempts.pop(key, None)
         PROCESSING.labels(self.name).observe(time.perf_counter() - started)
+        self._mark_done(msg, outcome)
+
+    def process_batch(self, messages: list[Message]) -> None:
+        assert self.batch_handler is not None
+        first = messages[0]
+        key = (first.topic(), first.partition(), first.offset())
+        started = time.perf_counter()
+        try:
+            rejects = self.batch_handler(messages)
+        except Exception as exc:
+            self._retry_later(messages, exc)
+            return
+        self._attempts.pop(key, None)
+        rejected = {id(m) for m, _ in rejects}
+        for msg, exc in rejects:
+            self._dead_letter(msg, exc)
+        per_message = (time.perf_counter() - started) / len(messages)
+        for msg in messages:
+            PROCESSING.labels(self.name).observe(per_message)
+            self._mark_done(msg, "dlq" if id(msg) in rejected else "ok")
+
+    def _mark_done(self, msg: Message, outcome: str) -> None:
         _, ts_ms = msg.timestamp()
         if ts_ms > 0:
             MESSAGE_AGE.labels(self.name).observe(max(time.time() - ts_ms / 1000, 0))
-        MESSAGES.labels(self.name, topic, outcome).inc()
+        MESSAGES.labels(self.name, msg.topic(), outcome).inc()
         self.processed += 1
-        self._pending[(topic, partition)] = offset + 1
+        tp = (msg.topic(), msg.partition())
+        self._pending[tp] = max(self._pending.get(tp, 0), msg.offset() + 1)
         self._uncommitted += 1
+
+    def _retry_later(self, messages: list[Message], exc: Exception) -> None:
+        """Rewind every partition in ``messages`` to its first offset and back off."""
+        first = messages[0]
+        key = (first.topic(), first.partition(), first.offset())
+        attempt = self._attempts.get(key, 0) + 1
+        self._attempts[key] = attempt
+        backoff = min(self.max_backoff_s, 0.5 * 2 ** (attempt - 1))
+        log.warning(
+            "handler failed, will retry",
+            exc_info=attempt == 1,
+            extra={
+                "worker": self.name,
+                "topic": first.topic(),
+                "partition": first.partition(),
+                "offset": first.offset(),
+                "messages": len(messages),
+                "attempt": attempt,
+                "backoff_s": backoff,
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
+        rewind: dict[tuple[str, int], int] = {}
+        for msg in messages:
+            tp = (msg.topic(), msg.partition())
+            rewind[tp] = min(rewind.get(tp, msg.offset()), msg.offset())
+            MESSAGES.labels(self.name, msg.topic(), "retry").inc()
+        for (topic, partition), offset in rewind.items():
+            self._consumer.seek(TopicPartition(topic, partition, offset))
+        self._stop.wait(backoff)
 
     def _dead_letter(self, msg: Message, exc: Exception) -> None:
         headers: dict[str, str | bytes] = {k: v for k, v in (msg.headers() or [])}

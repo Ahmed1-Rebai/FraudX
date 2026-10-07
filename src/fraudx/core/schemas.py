@@ -9,20 +9,22 @@ anything else requires a new version and a migration note in ``memory.md``.
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from ipaddress import IPv4Address, IPv6Address
 from typing import Annotated
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, PlainSerializer
+from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, PlainSerializer
 
 SCHEMA_VERSION = 1
 
-# Money is a Decimal internally and a JSON number on the wire (not a string),
+# Money is a Decimal normalised to 2 decimal places (100 -> 100.00, so every
+# store holds the same value) and a JSON number on the wire (not a string),
 # so non-Python consumers see the natural type.
 Money = Annotated[
     Decimal,
     Field(ge=0, max_digits=18, decimal_places=2),
+    AfterValidator(lambda v: v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
     PlainSerializer(float, return_type=float, when_used="json"),
 ]
 
