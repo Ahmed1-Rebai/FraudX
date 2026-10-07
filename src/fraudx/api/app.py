@@ -1,0 +1,64 @@
+"""FastAPI application factory.
+
+Run locally with ``uv run uvicorn fraudx.api.app:app --reload``.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from prometheus_client import make_asgi_app
+
+from fraudx import __version__
+from fraudx.api.metrics import MetricsMiddleware
+from fraudx.api.routes import health
+from fraudx.core.config import (
+    CassandraSettings,
+    KafkaSettings,
+    MongoSettings,
+    Neo4jSettings,
+    RedisSettings,
+    get_app_settings,
+)
+from fraudx.core.logging import configure_logging
+from fraudx.storage.health import DependencyProbe
+
+log = logging.getLogger(__name__)
+
+
+def build_probe() -> DependencyProbe:
+    return DependencyProbe(
+        kafka=KafkaSettings(),
+        mongo=MongoSettings(),
+        cassandra=CassandraSettings(),
+        redis=RedisSettings(),
+        neo4j=Neo4jSettings(),
+        timeout_s=get_app_settings().dependency_timeout_s,
+    )
+
+
+def create_app(probe: DependencyProbe | None = None) -> FastAPI:
+    settings = get_app_settings()
+    configure_logging(settings.log_level, settings.log_format)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        app.state.probe = probe or build_probe()
+        log.info("api started", extra={"version": __version__, "env": settings.env})
+        try:
+            yield
+        finally:
+            app.state.probe.close()
+            log.info("api stopped")
+
+    app = FastAPI(title="FraudX API", version=__version__, lifespan=lifespan)
+    app.add_middleware(MetricsMiddleware)
+    app.include_router(health.router)
+    app.mount("/metrics", make_asgi_app())
+    return app
+
+
+app = create_app()

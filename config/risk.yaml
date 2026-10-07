@@ -1,0 +1,12 @@
+# Risk engine parameters. Validated at load time (weights must sum to 1.0).
+# Change, commit, and note the rationale in memory.md - scores are only
+# comparable across runs that used the same configuration.
+risk:
+  weights:
+    ml: 0.40
+    anomaly: 0.30
+    graph: 0.30
+  thresholds:
+    medium: 30   # score >= 30 -> MEDIUM
+    high: 70     # score >= 70 -> HIGH
+  alert_threshold: 70
