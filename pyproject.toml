@@ -17,6 +17,9 @@ dependencies = [
     "redis>=6.0",
     "cassandra-driver>=3.29",
     "neo4j>=5.28",
+    "lightgbm>=4.7.0",
+    "numpy>=2.5.3",
+    "scikit-learn>=1.9.1",
 ]
 
 [dependency-groups]

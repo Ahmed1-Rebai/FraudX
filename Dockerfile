@@ -16,7 +16,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
 FROM python:3.12-slim AS runtime
-RUN useradd --system --uid 10001 --no-create-home fraudx
+# libgomp: OpenMP runtime required by LightGBM.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --no-create-home fraudx
 WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY config ./config

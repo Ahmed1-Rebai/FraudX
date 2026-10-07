@@ -3,7 +3,7 @@
 COMPOSE := docker compose
 INFRA := kafka kafka-init mongodb cassandra cassandra-init redis neo4j neo4j-init
 
-.PHONY: data data-paysim replay tail help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
+.PHONY: data data-train features train data-paysim replay tail help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -32,6 +32,16 @@ check: lint test ## Lint + unit tests (run before every commit)
 
 data: ## Generate the synthetic dataset into data/generated (ARGS="--customers 5000")
 	uv run python -m fraudx.ingestion generate $(ARGS)
+
+data-train: ## Generate the (larger, different-seed) training dataset into data/training/synthetic
+	uv run python -m fraudx.ingestion generate --out data/training/synthetic --seed 1337 --customers 5000 --days 30 --rings 12
+
+features: ## Build training features with the online feature code (Redis db 1) for D=<dataset dir>
+	uv run python -m fraudx.ml build-features --dataset $(or $(D),data/training/synthetic)
+
+train: ## Train + evaluate the fraud model (holdout: demo dataset), register and activate it
+	uv run python -m fraudx.ml build-features --dataset data/generated
+	uv run python -m fraudx.ml train --dataset data/training/synthetic --holdout data/generated --activate $(ARGS)
 
 data-paysim: ## Convert data/raw/PS_log.csv (Kaggle PaySim) into data/processed/paysim
 	uv run python -m fraudx.ingestion paysim $(ARGS)

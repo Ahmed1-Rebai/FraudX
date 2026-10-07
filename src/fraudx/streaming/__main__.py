@@ -28,7 +28,9 @@ def main() -> int:
     worker = StreamWorker(
         name="feature-processor",
         topics=[TRANSACTIONS_RAW],
-        handler=FeatureProcessor(OnlineFeatureStore(redis), producer),
+        handler=None,
+        batch_handler=FeatureProcessor(OnlineFeatureStore(redis), producer),
+        batch_size=500,
         settings=kafka,
         producer=producer,
         heartbeat_path=worker_settings.heartbeat_path,

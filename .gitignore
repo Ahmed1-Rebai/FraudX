@@ -19,6 +19,7 @@ build/
 data/raw/*
 data/processed/*
 data/generated/*
+data/training/
 !data/**/.gitkeep
 models/*
 !models/.gitkeep

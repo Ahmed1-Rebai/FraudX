@@ -33,6 +33,7 @@ def _generate(args: argparse.Namespace) -> int:
             "days": args.days,
             "start": args.start,
             "victim_share": args.victim_share,
+            "rings": args.rings,
         }.items()
         if v is not None
     }
@@ -126,6 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--customers", type=int)
     gen.add_argument("--days", type=int)
     gen.add_argument("--victim-share", type=float, help="share of customers hit by fraud")
+    gen.add_argument("--rings", type=int, help="number of fraud rings")
     gen.add_argument(
         "--start",
         type=datetime.fromisoformat,

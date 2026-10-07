@@ -99,9 +99,9 @@ class FakeStore:
     def __init__(self):
         self.events = []
 
-    def compute(self, event):
-        self.events.append(event)
-        return build_features(event, _raw(), None, None)
+    def compute_many(self, events):
+        self.events.extend(events)
+        return [build_features(e, _raw(), None, None) for e in events]
 
 
 class FakeKafka:
@@ -133,7 +133,7 @@ def _processor():
 
 def test_processor_publishes_featured_transaction_keyed_by_customer():
     proc, _, kafka = _processor()
-    proc(Msg(BASE))
+    assert proc([Msg(BASE)]) == []
     topic, value, key = kafka.produced[0]
     assert (topic, key) == ("transactions.features", b"C-1")
     out = FeaturedTransaction.model_validate_json(value)
@@ -143,7 +143,7 @@ def test_processor_publishes_featured_transaction_keyed_by_customer():
 
 def test_processor_strips_labels_before_features_and_output():
     proc, store, kafka = _processor()
-    proc(Msg({**BASE, "is_fraud_label": True}))
+    proc([Msg({**BASE, "is_fraud_label": True})])
     assert store.events[0].is_fraud_label is None
     assert b"is_fraud_label" not in kafka.produced[0][1]
 
@@ -154,6 +154,9 @@ def test_processor_strips_labels_before_features_and_output():
 )
 def test_processor_rejects_invalid_events_permanently(payload):
     proc, store, kafka = _processor()
-    with pytest.raises(PermanentError):
-        proc(Msg(payload))
-    assert not store.events and not kafka.produced
+    bad = Msg(payload)
+    rejects = proc([bad, Msg(BASE)])
+    assert [m for m, _ in rejects] == [bad]
+    assert isinstance(rejects[0][1], PermanentError)
+    assert [e.transaction_id for e in store.events] == ["TX-9"]  # the valid one still flows
+    assert len(kafka.produced) == 1

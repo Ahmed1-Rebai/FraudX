@@ -63,7 +63,8 @@ failed sink never blocks scoring, and any stage can be replayed from Kafka.
 | `messaging` runtime | **done** | `EventProducer` + `StreamWorker`: the shared Kafka runtime for every stage (§4.1) |
 | `streaming` feature-processor | **done** | Validate against `TransactionEvent`, dead-letter invalid events, compute online features in Redis (§5.3), publish `FeaturedTransaction` to `transactions.features` |
 | `storage` writers | **done** | `graph-writer` (Neo4j), `history-writer` (Cassandra), `profile-writer` (MongoDB): batched, idempotent sinks, `python -m fraudx.storage graph\|history\|profile` |
-| `scoring` scorer | Phase 5–8 | Rules + XGBoost/LightGBM + Isolation Forest + graph features → risk engine |
+| `ml` | **done** | Offline training (LightGBM) on features built by the online code; versioned artifacts + MongoDB registry; `FraudModel` for inference (§6.1) |
+| `scoring` scorer | Phase 6–8 | Rules + LightGBM + Isolation Forest + graph features → risk engine |
 | `scoring.risk` | **done** | Weighted, configurable 0–100 score with rule floors and missing-signal handling |
 | `alerts` | Phase 8 | Deliver alerts from `fraud.alerts` |
 | `explain` | Phase 9 | Evidence retrieval → deterministic template or LLM explanation |
@@ -246,6 +247,31 @@ level = HIGH if score ≥ 70, MEDIUM if ≥ 30, else LOW         (config/risk.ya
 * Evaluation uses precision, recall, F1, ROC-AUC and **PR-AUC (primary)** with a
   time-based split. Accuracy is not used because of class imbalance.
 
+### 6.1 Supervised model (`fraudx.ml`)
+
+```text
+dataset dir ──build-features──► features_v1.npz ──train──► models/fraud_lgbm/<version>/
+  (events.jsonl +                (same Lua/Python feature     model.txt + metadata.json
+   ground_truth.csv)              code as the live processor,  ──register──► MongoDB model_registry
+                                  isolated Redis db 1)           (one active version per model)
+```
+
+* **No training/serving skew:** training features come from
+  `OnlineFeatureStore.compute_many` (the live code path), and model input from
+  `fraudx.ml.vectorize` (shared with the scorer). `FraudModel.load` refuses an
+  artifact whose `feature_version` or feature names differ from the pipeline.
+* **Data:** trained on a separate dataset (`make data-train`: seed 1337, 5,000
+  customers, 30 days, 12 rings). The demo dataset (seed 42) is an
+  out-of-sample holdout, so the demo stream is never training data.
+* **Protocol:** 70/15/15 split by event time; candidates unweighted vs
+  `scale_pos_weight = sqrt(neg/pos)`, early-stopped on validation PR-AUC;
+  threshold = max F1 on validation; test and holdout metrics include per-scenario
+  recall / false-positive rate, Brier score, and ablations without the
+  balance and network feature groups. Each run writes a report to
+  `docs/experiments/`.
+* **Version** = `<UTC timestamp>-<sha256(features file)[:8]>`, which ties a
+  model to its exact training data.
+
 ## 7. Explanations (LLM)
 
 * Explanations are generated only for alerts (score ≥ threshold) or on analyst
@@ -286,7 +312,7 @@ level = HIGH if score ≥ 70, MEDIUM if ≥ 30, else LOW         (config/risk.ya
 | Concern | Local | Scale-out |
 |---|---|---|
 | Kafka | 1 broker, 6 partitions | 3+ brokers, RF=3; up to 6 consumers per group without re-partitioning |
-| Stream processing | 1 feature-processor (~2k events/s) | `--scale feature-processor=6`; state lives in Redis, so workers are stateless. Next lever: batch consume + one pipeline per batch |
+| Stream processing | 1 feature-processor, batched (≈5.7k events/s measured on the same code path offline; ≈2k/s before batching) | `--scale feature-processor=6`; state lives in Redis, so workers are stateless |
 | Redis | single node | Redis Cluster (keys are already hash-tagged per customer) |
 | Cassandra | 1 node, RF=1 | multi-node, NetworkTopologyStrategy RF=3 |
 | MongoDB | standalone | replica set, then shard `investigations` by `customer_id` if needed |

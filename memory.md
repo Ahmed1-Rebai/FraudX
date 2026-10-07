@@ -3,7 +3,7 @@
 Persistent project memory. **Read this first** when resuming work; update it
 at the end of every work session (progress, issues, decisions, next tasks).
 
-Last updated: 2026-10-07 (Phase 4, store writers, complete)
+Last updated: 2026-10-07 (Phase 5, supervised model, complete)
 
 ---
 
@@ -95,6 +95,9 @@ make data              # synthetic dataset -> data/generated (ARGS="--customers 
 make data-paysim       # data/raw/PS_log.csv -> data/processed/paysim (ARGS="--limit 100000")
 make replay            # data/generated -> transactions.raw (ARGS="--rate 500 --rebase-time")
 make tail T=transactions.dlq ARGS="--from-beginning -n 5"   # inspect a topic
+make data-train         # training dataset (seed 1337, 5k customers, 30 days) -> data/training/synthetic
+make features           # training features via online code in Redis db 1 (D=<dataset dir>)
+make train              # build holdout features, train, report, register + activate in MongoDB
 docker compose run --rm replay --rate 1000 --limit 5000     # replay from a container
 make ps | logs S=api | topics | cqlsh | mongosh | redis-cli | cypher
 make down               # stop (keep data)   |   make clean  # stop + delete volumes
@@ -155,11 +158,36 @@ Grafana `:3000`.
       contract. Backlog drained by all three writers in under 30 s; handler
       cost 0.35–0.39 ms/msg (≈2.5–2.9k msg/s per writer). Tests: 84 unit,
       21 integration
+- [x] **Phase 5, supervised model:** `ml.vectorize` (23 features, shared with
+      inference), `ml.dataset` (offline build through `OnlineFeatureStore.compute_many`
+      on Redis db 1; refuses the live db; flushes afterwards), `ml.train`
+      (LightGBM, time split, candidates, threshold, per-scenario metrics,
+      ablations, versioned artifact), `ml.model.FraudModel` (inference, compatibility
+      checks), `ml.registry` (MongoDB, one active version, rollback), `ml.report`,
+      CLI `python -m fraudx.ml build-features|train`, make targets. The feature
+      processor now runs in batch mode (`compute_many`). The image has
+      `libgomp1` for LightGBM (467 MB). Model `fraud_lgbm:20261007140119-b6deb82e`
+      trained and **active**. Tests: 92 unit, 24 integration
 
 ## Current progress
 
-**Phase 4 (store writers) complete.** All four databases are populated by
-the pipeline. Next is Phase 5 (supervised model).
+**Phase 5 (supervised model) complete.** Next: decide on generator v2
+(see "Next tasks"), then Phase 6 (anomaly detection).
+
+Model `fraud_lgbm:20261007140119-b6deb82e` (report:
+`docs/experiments/2026-10-07-fraud_lgbm-20261007140119-b6deb82e.md`):
+training set 327,819 events / 843 fraud; best iteration 56; threshold 0.14.
+
+| set | PR-AUC | precision | recall | Brier |
+|---|---|---|---|---|
+| test (last 15 % by time) | 0.999 | 0.978 | 0.985 | 0.00012 |
+| holdout (demo dataset, other seed) | 0.9985 | 0.972 | 0.984 | 0.00020 |
+
+69 % of the gain comes from `cust_txn_count_5m` (card testing), followed by
+`device_customer_count` (9 %) and `balance_drain_ratio` (6 %). Both
+candidates reach validation PR-AUC 1.0, so the selection can't tell them
+apart. **These numbers validate the pipeline, not real-world performance:**
+the generator's fraud scenarios are separable by construction (see ADR-023).
 
 Store contents after the backlog (65,716 events, of which 2,000 are a
 rebased re-send of existing ids):
@@ -212,6 +240,14 @@ model scores on synthetic data. PaySim is the harder benchmark.
   so a schema bug would stall the profile writer (visible as lag) rather
   than dead-letter. Map write errors back to messages if this becomes a
   problem.
+* Datasets share id spaces (`C-000001`, `TX-000000001`): replaying a
+  *different* dataset into a running stack collides with existing ids (Redis
+  result cache, Cassandra by-id rows, Mongo profiles). Use one dataset per
+  stack (`make clean` between datasets), or add a dataset id prefix to the
+  generator.
+* The offline feature build shares the Redis instance (db 1, peak about 120 MB
+  for 328k events, 512 MB limit, `volatile-lru`). A much larger build could
+  evict live keys. Use a separate Redis for big builds.
 * The synthetic data is easy to classify by construction. Report model
   metrics on PaySim as well, and break synthetic results down by `scenario`
   (ground_truth.csv).
@@ -405,6 +441,44 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   TRANSFER and CASH_OUT.
 - **Impact:** Phase 5 training scripts and experiment notes in `docs/`.
 
+### ADR-022: LightGBM, trained on features produced by the online code
+- **Decision:** LightGBM (not XGBoost) for the supervised model. Training
+  features are produced by replaying a dataset through
+  `OnlineFeatureStore.compute_many` on an isolated Redis db, not by a
+  separate pandas implementation. Model input is defined once in
+  `fraudx.ml.vectorize`. Training uses a separate dataset (seed 1337); the
+  demo dataset is a holdout.
+- **Reason:** LightGBM trains fast on CPU, handles missing values (NaN) and
+  categorical features natively, and has a small artifact (`model.txt`). That
+  covers what we need; XGBoost would be equivalent. A second feature
+  implementation for training is the classic source of training/serving
+  skew. Training on the demo stream would make the live demo an in-sample
+  evaluation.
+- **Advantages:** Zero skew by construction (same code); reproducible builds
+  from a dataset file; the version hash ties a model to its data; the
+  batched build runs at about 5.7k events/s.
+- **Trade-offs:** The training build needs Redis (not a pure-Python batch
+  job); features must be built in event-time order; the image grew to
+  467 MB (numpy, scikit-learn, LightGBM, libgomp).
+- **Impact:** `fraudx.ml`; the scorer (Phase 8) loads the active registry
+  version with `FraudModel`.
+
+### ADR-023: Synthetic metrics are near-perfect, so the generator needs harder cases (proposed, not implemented)
+- **Observation:** Test PR-AUC 0.999 and holdout 0.9985. Every v1 fraud
+  scenario has a decisive signature: card testing → `cust_txn_count_5m`;
+  takeover → shared ring device + balance drain; mule → drain + shared device.
+- **Consequence:** The anomaly and graph detectors (Phases 6–7) can't show
+  any measurable added value on this data, and the risk-engine weighting can't
+  be justified empirically, which is the project's core claim.
+- **Proposal:** Generator v2 adds realistic hard cases:
+  - authorised push-payment fraud (victim's own device, home country,
+    moderate amount to a mule; detectable mainly through the graph);
+  - slow-drip mule activity under velocity thresholds;
+  - legitimate bursts (e.g. several quick purchases);
+  - legitimate large transfers to new payees.
+  Then retrain and report per-detector contribution.
+- **Status:** Awaiting the user's decision.
+
 ### ADR-021: Store writers are batched; they run on `transactions.features` until the scorer exists
 - **Decision:** (a) Add a batch mode to `StreamWorker` (batch handler
   returns rejects; any exception rewinds the whole batch). (b) Run the
@@ -487,17 +561,14 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 ## Next tasks
 
-1. **Phase 5 – Supervised model (offline training, separate from inference):**
-   - Training set: read `transactions.features` from the beginning (the
-     exact online features, so no training/serving skew) and join with
-     `data/generated/ground_truth.csv` by `transaction_id`. Optionally build
-     PaySim features through the same processor path.
-   - Time-based split, LightGBM or XGBoost (pick one; justify in an ADR),
-     class imbalance handling, PR-AUC primary metric plus precision, recall,
-     F1 and ROC-AUC; per-scenario recall; ablation without balance features.
-   - Versioned artifact in `models/` and a `model_registry` document in
-     MongoDB (one active version); experiment report in `docs/experiments/`.
-2. Then anomaly (6), graph features (7), anomaly (6), graph features (7), scorer + alerts (8),
+1. **Decision:** generator v2 with hard cases (ADR-023), recommended
+   *before* Phases 6–7 so the anomaly and graph detectors can show measurable
+   value. Afterwards rerun `make data-train && make features && make train`.
+2. **Phase 6 – Anomaly detection:** Isolation Forest trained on legitimate
+   traffic only, from the same feature matrix; scores calibrated to [0, 1]
+   (e.g. rank against a validation reference); registered like the
+   supervised model.
+3. Then graph features (7), anomaly (6), graph features (7), scorer + alerts (8),
    explainer (9), API endpoints + dashboard (10), benchmarks + Grafana
    dashboards (11).
 
@@ -546,5 +617,12 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 * Pydantic `decimal_places` validates but doesn't normalise: `100` stayed
   `100` (not `100.00`) all the way into Cassandra. Quantize money in the
   contract.
+* Pipelined Redis scripts execute in order, so batching many events in one
+  pipeline gives identical per-customer results (verified by an integration
+  test) at about 3× the throughput.
+* LightGBM wheels need `libgomp1` at runtime; `python:3.12-slim` lacks it.
+* Near-perfect metrics on synthetic data are a property of the generator,
+  not a success of the model. Always break results down by scenario and ask
+  what makes them separable.
 * Prometheus must scrape `/metrics/` (trailing slash) because the metrics app
   is mounted as a sub-application.

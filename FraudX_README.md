@@ -943,6 +943,11 @@ Evaluate:
 
 Because fraud is highly imbalanced, **do not rely only on accuracy**.
 
+> **Implemented (ADR-022):** LightGBM, trained on features produced by the
+> online feature code, time-based split, PR-AUC primary metric, per-scenario
+> results and ablations; versioned in `models/` and MongoDB `model_registry`.
+> See `docs/experiments/` and ADR-023 on why synthetic metrics are near-perfect.
+
 ------------------------------------------------------------------------
 
 ## Phase 6 --- Anomaly Detection

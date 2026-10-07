@@ -206,13 +206,34 @@ class OnlineFeatureStore:
         self._entity_script = redis.register_script(_ENTITY_LUA)
 
     def compute(self, event: TransactionEvent) -> TransactionFeatures:
+        return self.compute_many([event])[0]
+
+    def compute_many(self, events: list[TransactionEvent]) -> list[TransactionFeatures]:
+        """Features for a batch in one round trip.
+
+        Redis executes pipelined scripts in order, so each event sees the state
+        left by the events before it: the result is identical to calling
+        ``compute`` once per event, in order.
+        """
+        pipe = self.redis.pipeline(transaction=False)
+        layout = [self._enqueue(pipe, event) for event in events]
+        results = iter(pipe.execute())
+        out = []
+        for event, (has_device, has_ip) in zip(events, layout, strict=True):
+            customer = json.loads(next(results))
+            customer["last_ts"] = customer.get("last_ts")  # cjson.null -> None
+            device_stats = EntityStats(*next(results)) if has_device else None
+            ip_stats = EntityStats(*next(results)) if has_ip else None
+            out.append(build_features(event, customer, device_stats, ip_stats))
+        return out
+
+    def _enqueue(self, pipe: Any, event: TransactionEvent) -> tuple[bool, bool]:
         ts_ms = int(event.event_time.timestamp() * 1000)
         tx = event.transaction_id
         device = event.device_id or ""
         ip = str(event.ip_address) if event.ip_address else ""
         country = event.location.country if event.location else ""
 
-        pipe = self.redis.pipeline(transaction=False)
         self._customer_script(
             keys=customer_keys(event.customer_id, tx),
             args=[tx, ts_ms, str(event.amount), device, ip, country,
@@ -225,11 +246,4 @@ class OnlineFeatureStore:
             self._entity_script(keys=entity_keys("dev", device), args=entity_args, client=pipe)
         if ip:
             self._entity_script(keys=entity_keys("ip", ip), args=entity_args, client=pipe)
-        results = pipe.execute()
-
-        customer = json.loads(results[0])
-        customer["last_ts"] = customer.get("last_ts")  # cjson.null -> None
-        rest = iter(results[1:])
-        device_stats = EntityStats(*next(rest)) if device else None
-        ip_stats = EntityStats(*next(rest)) if ip else None
-        return build_features(event, customer, device_stats, ip_stats)
+        return bool(device), bool(ip)
