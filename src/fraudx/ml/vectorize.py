@@ -10,14 +10,21 @@ from __future__ import annotations
 
 import math
 
-from fraudx.core.schemas import TransactionEvent, TransactionFeatures, TransactionType
+from fraudx.core.schemas import (
+    PaymentMethod,
+    TransactionEvent,
+    TransactionFeatures,
+    TransactionType,
+)
 
 # Stable integer codes for the categorical transaction type.
 TYPE_CODES: dict[TransactionType, int] = {t: i for i, t in enumerate(TransactionType)}
+METHOD_CODES: dict[PaymentMethod, int] = {m: i for i, m in enumerate(PaymentMethod)}
 
 FEATURE_NAMES: tuple[str, ...] = (
     "amount_log",
     "transaction_type",
+    "payment_method",
     "hour_of_day",
     "cust_txn_count_5m",
     "cust_txn_count_1h",
@@ -40,11 +47,15 @@ FEATURE_NAMES: tuple[str, ...] = (
     "ip_customer_count",
     "balance_drain_ratio",
 )
-CATEGORICAL: tuple[str, ...] = ("transaction_type",)
+CATEGORICAL: tuple[str, ...] = ("transaction_type", "payment_method")
 
 # Groups used for ablation studies (e.g. PaySim balance leakage, ADR-016).
 FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
     "balance": ("balance_drain_ratio",),
+    # PaySim injects fraud at a constant rate while legit volume varies by
+    # hour/day, so time-of-day can carry a simulator artefact.
+    "time": ("hour_of_day",),
+    "channel": ("payment_method",),
     "network": (
         "device_txn_count_1h",
         "device_customer_count",
@@ -59,9 +70,11 @@ def _num(value: float | int | bool | None) -> float:
 
 
 def vectorize(event: TransactionEvent, features: TransactionFeatures) -> list[float]:
+    method = event.payment_method
     values = {
         "amount_log": math.log1p(float(event.amount)),
         "transaction_type": float(TYPE_CODES[event.transaction_type]),
+        "payment_method": math.nan if method is None else float(METHOD_CODES[method]),
     }
     raw = features.model_dump()
     return [values[name] if name in values else _num(raw[name]) for name in FEATURE_NAMES]

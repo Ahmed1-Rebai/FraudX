@@ -58,7 +58,8 @@ failed sink never blocks scoring, and any stage can be replayed from Kafka.
 
 | Component | Status | Responsibility |
 |---|---|---|
-| `ingestion` datasets | **done** | Deterministic synthetic generator with labelled fraud scenarios; PaySim loader with label-independent enrichment (§12) |
+| `ingestion` datasets | **done** | Deterministic synthetic generator with labelled fraud scenarios (§12) |
+| `datasets` | **done** | Public-dataset pipelines (PaySim, IBM AML): profile → clean → canonicalize → report (§12) |
 | `ingestion` replay | **done** | Replay a dataset to `transactions.raw`: paced, keyed by customer, labels stripped, optional time rebase |
 | `messaging` runtime | **done** | `EventProducer` + `StreamWorker`: the shared Kafka runtime for every stage (§4.1) |
 | `streaming` feature-processor | **done** | Validate against `TransactionEvent`, dead-letter invalid events, compute online features in Redis (§5.3), publish `FeaturedTransaction` to `transactions.features` |
@@ -96,7 +97,9 @@ checks the topics match `fraudx.core.topics`.
   idempotent writes everywhere (natural keys, `ZADD` by transaction id,
   Cassandra upserts, Neo4j `MERGE`). Replays are therefore safe.
 * **Serialization:** JSON validated by versioned Pydantic models
-  (`schema_version`). Changes are additive only; see ADR-010.
+  (`schema_version`). Changes are additive only; see ADR-010. Additive
+  fields so far: `payment_method`, `original_amount`, `original_currency`
+  (for multi-currency sources such as IBM AML).
 * Production: RF=3, `min.insync.replicas=2`, producer `acks=all` + idempotence.
 
 ### 4.1 Worker runtime (`fraudx.messaging`)
@@ -206,6 +209,13 @@ Measured on the default dataset: one worker processes about 2,000 events/s
 (≈0.5 ms per event including the Redis round trip and produce). Scaling is
 horizontal, up to one worker per partition (6).
 
+**Cost model:** window sums iterate the customer's last 24 h of transactions,
+so per-event cost grows with customer activity. About 60 µs per Lua call on
+synthetic data; about 450 µs on IBM AML, whose corporate entities make
+thousands of transfers a day. Bounded-cost alternative if needed: hierarchical
+time buckets (minute buckets for 5 m/1 h, hour buckets for 24 h, ≤ ~90
+operations per event), with approximate window edges.
+
 ### 5.4 Neo4j (`infra/neo4j/schema.cypher`)
 
 ```text
@@ -253,7 +263,7 @@ level = HIGH if score ≥ 70, MEDIUM if ≥ 30, else LOW         (config/risk.ya
 dataset dir ──build-features──► features_v1.npz ──train──► models/fraud_lgbm/<version>/
   (events.jsonl +                (same Lua/Python feature     model.txt + metadata.json
    ground_truth.csv)              code as the live processor,  ──register──► MongoDB model_registry
-                                  isolated Redis db 1)           (one active version per model)
+                                  disposable redis-offline)      (one active version per model)
 ```
 
 * **No training/serving skew:** training features come from
@@ -330,8 +340,10 @@ the MVP.
 
 ## 12. Datasets
 
-`python -m fraudx.ingestion generate|paysim` (or `make data` / `make data-paysim`)
-writes a dataset directory:
+`python -m fraudx.ingestion generate` (or `make data`) writes a synthetic
+dataset directory. Public datasets use `python -m fraudx.datasets paysim|ibm_aml`
+(or `make paysim` / `make ibm-aml`, staging profile → clean → canonicalize →
+features → train). Both produce the same layout:
 
 | File | Content |
 |---|---|
@@ -365,7 +377,9 @@ Incident mix (weights): takeover 0.25, card testing 0.20, APP scam 0.35, local
 takeover 0.20. Set the v2 weights to 0 for v1-style data. Defaults (2,000
 customers, 14 days) give 65,292 events at 0.41 % fraud in about 2 s.
 
-**PaySim loader** (`fraudx.ingestion.paysim`). It maps `step` → event time,
-`nameOrig` → customer/source account and `isFraud` → label. Device, IP and
-location come from a salted hash of the customer id, so they're
-label-independent and add no signal to PaySim.
+**Public datasets** (`fraudx.datasets`, ADR-024/025). PaySim and IBM AML
+HI-Small go through explicit stages: profile → clean (named rules recording
+rationale, rows and labels affected) → canonicalize (to `TransactionEvent`) →
+features (online code on the disposable `redis-offline`, ADR-026) → train.
+Each dataset gets a generated report in `docs/data/`. Fields a source lacks
+stay empty; nothing is invented. See [docs/data/README.md](docs/data/README.md).

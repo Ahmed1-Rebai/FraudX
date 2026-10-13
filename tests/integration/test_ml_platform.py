@@ -47,7 +47,7 @@ def test_batched_features_equal_one_at_a_time(scratch_redis, small_dataset):
     assert batched == sequential
 
 
-def test_offline_build_uses_isolated_db_and_cleans_up(scratch_redis, small_dataset):
+def test_offline_build_flushes_its_db_and_spares_the_live_one(scratch_redis, small_dataset):
     live = redis_client(RedisSettings())
     live_keys_before = live.dbsize()
     matrix = build(small_dataset, scratch_redis, batch_size=64)
@@ -88,3 +88,15 @@ def test_registry_keeps_exactly_one_active_version(mongo_db):
     assert registry.active(db, name)["version"] == "v1"
     with pytest.raises(KeyError):
         registry.activate_version(db, name, "nope")
+
+
+def test_offline_mode_skips_result_cache_without_changing_features(scratch_redis, small_dataset):
+    from fraudx.ingestion.dataset import EVENTS_FILE, read_events
+
+    events = list(read_events(small_dataset / EVENTS_FILE))[:200]
+    cached = OnlineFeatureStore(scratch_redis).compute_many(events)
+    assert any(scratch_redis.scan_iter(match="fx:cust:*:result:*"))
+    scratch_redis.flushdb()
+    uncached = OnlineFeatureStore(scratch_redis, cache_results=False).compute_many(events)
+    assert uncached == cached
+    assert not any(scratch_redis.scan_iter(match="fx:cust:*:result:*"))

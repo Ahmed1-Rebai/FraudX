@@ -3,7 +3,7 @@
 Persistent project memory. **Read this first** when resuming work; update it
 at the end of every work session (progress, issues, decisions, next tasks).
 
-Last updated: 2026-10-07 (generator v2 + model retrained; real datasets pending)
+Last updated: 2026-10-13 (public-dataset pipeline: PaySim + IBM AML profiled, cleaned, canonicalized, reported; features/train pending)
 
 ---
 
@@ -92,12 +92,15 @@ make infra              # only Kafka + 4 databases + provisioning
 make api                # API on the host with reload (port 8000)
 make test-integration   # integration tests against the running stack
 make data              # synthetic dataset -> data/generated (ARGS="--customers 5000 --days 30")
-make data-paysim       # data/raw/PS_log.csv -> data/processed/paysim (ARGS="--limit 100000")
+make download-datasets # Kaggle: PaySim + IBM AML HI-Small -> data/raw (token in ~/.kaggle/access_token)
+make paysim            # PaySim: profile -> clean -> canonical -> features -> train -> report
+make ibm-aml           # IBM AML: same five stages -> data/processed/ibm_aml
 make replay            # data/generated -> transactions.raw (ARGS="--rate 500 --rebase-time")
 make tail T=transactions.dlq ARGS="--from-beginning -n 5"   # inspect a topic
 make data-train         # training dataset (seed 1337, 5k customers, 30 days) -> data/training/synthetic
-make features           # training features via online code in Redis db 1 (D=<dataset dir>)
+make features           # training features via online code on redis-offline (D=<dataset dir>)
 make train              # build holdout features, train, report, register + activate in MongoDB
+make offline-redis      # start the disposable Redis (:6380) used by feature builds
 docker compose run --rm replay --rate 1000 --limit 5000     # replay from a container
 make ps | logs S=api | topics | cqlsh | mongosh | redis-cli | cypher
 make down               # stop (keep data)   |   make clean  # stop + delete volumes
@@ -158,9 +161,10 @@ Grafana `:3000`.
       contract. Backlog drained by all three writers in under 30 s; handler
       cost 0.35–0.39 ms/msg (≈2.5–2.9k msg/s per writer). Tests: 84 unit,
       21 integration
-- [x] **Phase 5, supervised model:** `ml.vectorize` (23 features, shared with
-      inference), `ml.dataset` (offline build through `OnlineFeatureStore.compute_many`
-      on Redis db 1; refuses the live db; flushes afterwards), `ml.train`
+- [x] **Phase 5, supervised model:** `ml.vectorize` (features shared with
+      inference; now 24 after adding `payment_method`), `ml.dataset` (offline
+      build through `OnlineFeatureStore.compute_many`; originally on Redis db 1,
+      now on the disposable `redis-offline` service, ADR-026), `ml.train`
       (LightGBM, time split, candidates, threshold, per-scenario metrics,
       ablations, versioned artifact), `ml.model.FraudModel` (inference, compatibility
       checks), `ml.registry` (MongoDB, one active version, rollback), `ml.report`,
@@ -174,12 +178,36 @@ Grafana `:3000`.
       Both datasets regenerated; model retrained:
       `fraud_lgbm:20261007200714-47e7e074` **active** (v1 model still
       registered for rollback). Tests: 97 unit, 24 integration
+- [x] **Public datasets (ADR-024/025/026):** `fraudx.datasets` pipeline
+      (`base`, `paysim`, `ibm_aml`, `info`, `report`, CLI) with explicit,
+      re-runnable stages profile → clean → canonicalize → report; the
+      hash-based PaySim enrichment is gone (`ingestion/paysim.py` deleted,
+      nothing invented). PaySim + IBM AML HI-Small downloaded with the user's
+      Kaggle token; **profile, clean and canonicalize run for both**; reports
+      generated in `docs/data/`. Additive `TransactionEvent` v1 fields
+      (`payment_method`, `original_amount`, `original_currency`) and a
+      `payment_method` model feature + `time`/`channel` ablation groups.
+      Offline builds moved to a disposable `redis-offline` service
+      (`OnlineFeatureStore(cache_results=False)`); `ml build-features` refuses
+      to run without it. Polars added. Tests: 101 unit, 24 integration
 
 ## Current progress
 
-**Phase 5 + generator v2 complete.** Next: integrate public datasets
-(ADR-024, waiting on the user's Kaggle access), then Phase 6 (anomaly
-detection).
+**Phase 5 + generator v2 complete; public-dataset pipeline in place.** The
+PaySim and IBM AML datasets are downloaded and **profiled, cleaned and
+canonicalized** (`data/processed/{paysim,ibm_aml}/`, all git-ignored) with
+reports in `docs/data/{paysim,ibm_aml}.md`. Next: **build features and train
+on PaySim** (`make paysim`), then the same for IBM AML (`make ibm-aml`), then
+commit and move to Phase 6 (anomaly detection).
+
+Public-dataset canonical sizes (after cleaning):
+- PaySim: 6,362,335 events, 7,928 fraud (0.125 %), 30 days.
+- IBM AML: 4,481,694 events, 4,514 laundering (0.101 %), 10 days,
+  122,767 customers (corporate hubs; ~35 min per feature build).
+
+⚠ The generated `docs/data/{paysim,ibm_aml}.md` currently state features and
+model are "not built yet": regenerate them with `make paysim` / `make ibm-aml`
+once the offline Redis has run the feature and train stages.
 
 **Datasets (v2):** demo `data/generated` 65,292 events / 265 fraud (0.41 %);
 training `data/training/synthetic` 336,653 / 684 (0.20 %).
@@ -260,9 +288,10 @@ model scores on synthetic data. PaySim is the harder benchmark.
   result cache, Cassandra by-id rows, Mongo profiles). Use one dataset per
   stack (`make clean` between datasets), or add a dataset id prefix to the
   generator.
-* The offline feature build shares the Redis instance (db 1, peak about 120 MB
-  for 328k events, 512 MB limit, `volatile-lru`). A much larger build could
-  evict live keys. Use a separate Redis for big builds.
+* Feature-store cost grows with a customer's 24 h activity (the Lua window
+  sum iterates the window): about 450 µs per event on IBM AML corporates
+  versus 60 µs on synthetic data. Offline builds of IBM AML take about 35 min.
+  Bounded alternative: hierarchical time buckets (see ARCHITECTURE §5.3).
 * The synthetic data is easy to classify by construction. Report model
   metrics on PaySim as well, and break synthetic results down by `scenario`
   (ground_truth.csv).
@@ -478,7 +507,42 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 - **Impact:** `fraudx.ml`; the scorer (Phase 8) loads the active registry
   version with `FraudModel`.
 
-### ADR-024: Public datasets: PaySim for the supervised benchmark, IBM AML for the graph (proposed)
+### ADR-026: Offline feature builds run on a disposable Redis
+- **Decision:** Compose service `redis-offline` (profile `jobs`, port 6380,
+  10 GB, `noeviction`, no persistence) hosts all training feature builds.
+  `OnlineFeatureStore(cache_results=False)` skips the per-transaction result
+  cache offline.
+- **Reason:** PaySim alone means 6.3 M customers; the live Redis has 512 MB
+  with `volatile-lru`, so a build could evict live feature state (a known
+  issue since Phase 5). The result cache exists only for redelivery, which
+  can't happen offline, and it would double memory.
+- **Advantages:** Live state is safe; an over-sized build fails loudly
+  (`noeviction`) instead of producing wrong features; the code path is
+  identical to live (same Lua).
+- **Trade-offs:** One more container (started on demand by `make features`
+  / `make paysim`).
+
+### ADR-025: Public-dataset pipeline: explicit stages, auditable rules, nothing invented
+- **Decision:** `fraudx.datasets` runs profile → clean → canonicalize per
+  dataset, then the existing feature and training code. Cleaning rules are
+  named, ordered, and record rationale plus rows *and positive labels*
+  affected (`drop_rows`, `drop_column`, `transform`, `flag`). A Markdown
+  report (`docs/data/<name>.md`) is generated from the artefacts. Polars does
+  the batch processing. Fields a source lacks stay empty: this replaces the
+  earlier hash-based device/IP enrichment of PaySim.
+- **Reason:** The user asked for clear, organised cleaning and feature
+  engineering. For an academic project, every number must be reproducible
+  and every data decision justified by measured evidence. Inventing
+  devices/IPs for PaySim would create features that look meaningful but
+  carry no information.
+- **Advantages:** Reproducible (`make paysim`, `make ibm-aml`); auditable
+  (label impact of every rule); stages re-runnable independently; the same
+  canonical layout feeds replay, feature building and training.
+- **Trade-offs:** Polars is a new dependency (one library, no pandas). The
+  canonical JSONL is large (PaySim 2.4 GB) but keeps one format for every
+  downstream tool.
+
+### ADR-024: Public datasets: PaySim for the supervised benchmark, IBM AML for the graph (implemented)
 - **Context:** The user wants real-world value beyond our generator. There
   is no openly licensed dataset of *real* bank transactions with customer,
   device and account identities (privacy). The options are:
@@ -490,7 +554,8 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   - IBM AML ([Altman et al., NeurIPS 2023](https://proceedings.neurips.cc/paper_files/paper/2023/hash/5f38404edff6f3f642d6fa5892479c42-Abstract.html)):
     synthetic transactions between individuals, companies and banks,
     calibrated to real data, with labelled laundering patterns (fan-in,
-    fan-out, cycles…). HI-Small has about 2 % illicit transactions. It is
+    fan-out, cycles…). HI-Small has **0.10 %** illicit transactions (5,177
+    of 5,078,345, measured; an earlier note wrongly said about 2 %). It is
     graph-native.
   - [IEEE-CIS / Vesta](https://ieee-dataport.org/documents/ieee-cis-fraud-detection):
     real e-commerce data, but anonymised and released under Kaggle
@@ -504,10 +569,11 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   - IBM AML (graph detector benchmark on calibrated laundering patterns).
   Loaders map each into `TransactionEvent`. IBM AML needs new payment types
   and currencies: an additive schema change.
-- **Blocker:** Kaggle needs the user's account (API token in
-  `~/.kaggle/kaggle.json`, or manual download into `data/raw/`). Check each
-  dataset's license on its Kaggle page before redistributing anything.
-  Datasets stay git-ignored.
+- **Status:** Implemented. Downloaded with the user's Kaggle token
+  (`~/.kaggle/access_token`, outside the repo). Licences confirmed from
+  Kaggle metadata: PaySim **CC BY-SA 4.0**, IBM AML **CDLA-Sharing-1.0**.
+  Datasets stay git-ignored. IEEE-CIS is not used. See ADR-025 and
+  `docs/data/`.
 
 ### ADR-023: Synthetic metrics are near-perfect, so the generator needs harder cases (implemented: generator v2)
 - **Observation:** Test PR-AUC 0.999 and holdout 0.9985. Every v1 fraud
@@ -609,19 +675,20 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 ## Next tasks
 
-1. **Public datasets (ADR-024):** once the user provides Kaggle access:
-   - verify `fraudx.ingestion.paysim` on the real file; build PaySim
-     features and train/evaluate (including the balance ablation);
-   - write an IBM AML loader (inspect the real schema first) with additive
-     schema changes for payment types and currencies, for the graph
-     benchmark.
-2. **Phase 6 – Anomaly detection:** Isolation Forest trained on legitimate
+1. **Finish the public-dataset benchmarks (ADR-024/025):** the profile/clean/
+   canonical/report stages are done for PaySim and IBM AML. Remaining:
+   - `make paysim` → build features (offline Redis) + train + report; check the
+     `balance` and `time` ablations (the `destination_balance_*` leak).
+   - `make ibm-aml` → same; this is the graph-detector benchmark (fan-in/out,
+     cycles). Expect ~35 min for the feature build.
+2. **Commit** the public-dataset pipeline once the reports contain real
+   feature/model numbers.
+3. **Phase 6 – Anomaly detection:** Isolation Forest trained on legitimate
    traffic only, from the same feature matrix; scores calibrated to [0, 1]
    (e.g. rank against a validation reference); registered like the
    supervised model.
-3. Then graph features (7), anomaly (6), graph features (7), scorer + alerts (8),
-   explainer (9), API endpoints + dashboard (10), benchmarks + Grafana
-   dashboards (11).
+4. Then graph features (7), scorer + alerts (8), explainer (9), API endpoints
+   + dashboard (10), benchmarks + Grafana dashboards (11).
 
 ## Lessons learned
 
@@ -678,5 +745,19 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 * Near-perfect metrics on synthetic data are a property of the generator,
   not a success of the model. Always break results down by scenario and ask
   what makes them separable.
+* **Profile before cleaning.** Every rule in `fraudx.datasets` came from a
+  measured number. Several "obvious" rules would have been wrong:
+  - FX had to be derived *before* dropping self-transfers, because 96 % of
+    USD conversions are self-transfers (a guard raised instead of silently
+    producing wrong amounts);
+  - a "sparse day" defined as < 10 % of the median day flagged one day,
+    because half the days are sparse; the artefact is really an *inflated
+    fraud share*, so flag that directly;
+  - PaySim zero-amount rows are 100 % fraud, and IBM's post-simulation tail
+    is 91 % laundering. Both are artefacts that would be learned.
+* A categorical model input must hold small non-negative integer codes.
+  Random floats in a categorical column make LightGBM overfit (toy test).
+* Kaggle's newer CLI reads `~/.kaggle/access_token` (KGAT tokens). Kaggle
+  metadata reports each dataset's licence; check it, don't assume.
 * Prometheus must scrape `/metrics/` (trailing slash) because the metrics app
   is mounted as a sub-application.

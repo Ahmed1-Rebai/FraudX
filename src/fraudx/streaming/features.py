@@ -42,9 +42,13 @@ RESULT_CACHE_TTL_S = 7 * 86_400  # = transactions.raw retention
 _CUSTOMER_LUA = """
 -- KEYS: 1 window zset, 2 stats hash, 3 devices set, 4 ips set, 5 countries set, 6 result cache
 -- ARGV: 1 tx_id, 2 ts_ms, 3 amount, 4 device, 5 ip, 6 country,
---       7 window_ttl_s, 8 profile_ttl_s, 9 cache_ttl_s, 10.. window sizes (ms)
-local cached = redis.call('GET', KEYS[6])
-if cached then return cached end
+--       7 window_ttl_s, 8 profile_ttl_s, 9 cache_ttl_s (0 = no result cache),
+--       10.. window sizes (ms)
+local caching = ARGV[9] ~= '0'
+if caching then
+  local cached = redis.call('GET', KEYS[6])
+  if cached then return cached end
+end
 
 local ts = tonumber(ARGV[2])
 local amount = tonumber(ARGV[3])
@@ -94,7 +98,7 @@ end
 redis.call('EXPIRE', KEYS[1], ARGV[7])
 for i = 2, 5 do redis.call('EXPIRE', KEYS[i], ARGV[8]) end
 local encoded = cjson.encode(result)
-redis.call('SET', KEYS[6], encoded, 'EX', ARGV[9])
+if caching then redis.call('SET', KEYS[6], encoded, 'EX', ARGV[9]) end
 return encoded
 """
 
@@ -200,8 +204,12 @@ def _round(value: float | None) -> float | None:
 
 
 class OnlineFeatureStore:
-    def __init__(self, redis: Redis) -> None:
+    """``cache_results=False`` disables the per-transaction result cache. Only
+    for offline builds, where nothing is redelivered and memory matters."""
+
+    def __init__(self, redis: Redis, cache_results: bool = True) -> None:
         self.redis = redis
+        self._cache_ttl = RESULT_CACHE_TTL_S if cache_results else 0
         self._customer_script = redis.register_script(_CUSTOMER_LUA)
         self._entity_script = redis.register_script(_ENTITY_LUA)
 
@@ -237,7 +245,7 @@ class OnlineFeatureStore:
         self._customer_script(
             keys=customer_keys(event.customer_id, tx),
             args=[tx, ts_ms, str(event.amount), device, ip, country,
-                  WINDOW_TTL_S, PROFILE_TTL_S, RESULT_CACHE_TTL_S, *WINDOWS_MS],
+                  WINDOW_TTL_S, PROFILE_TTL_S, self._cache_ttl, *WINDOWS_MS],
             client=pipe,
         )  # fmt: skip
         entity_args = [tx, ts_ms, event.customer_id, ENTITY_WINDOW_MS, WINDOW_TTL_S,

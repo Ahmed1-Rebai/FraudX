@@ -27,6 +27,12 @@ Money = Annotated[
     AfterValidator(lambda v: v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
     PlainSerializer(float, return_type=float, when_used="json"),
 ]
+# An amount in its original currency, without rounding (e.g. 0.000084 BTC).
+ExactAmount = Annotated[
+    Decimal,
+    Field(ge=0, max_digits=30),
+    PlainSerializer(float, return_type=float, when_used="json"),
+]
 
 
 class TransactionType(StrEnum):
@@ -35,6 +41,18 @@ class TransactionType(StrEnum):
     CASH_OUT = "CASH_OUT"
     CASH_IN = "CASH_IN"
     DEBIT = "DEBIT"
+
+
+class PaymentMethod(StrEnum):
+    """Payment rail / instrument, when the source provides it (e.g. IBM AML)."""
+
+    ACH = "ACH"
+    WIRE = "WIRE"
+    CHEQUE = "CHEQUE"
+    CREDIT_CARD = "CREDIT_CARD"
+    CASH = "CASH"
+    BITCOIN = "BITCOIN"
+    REINVESTMENT = "REINVESTMENT"
 
 
 # Types that move money out of the source account.
@@ -89,6 +107,11 @@ class TransactionEvent(_Contract):
     location: Location | None = None
     session_id: str | None = Field(default=None, max_length=64)
     balances: Balances | None = None
+    # Additive in v1 (all optional): payment rail, and the amount as paid when
+    # ``amount``/``currency`` were normalised to the platform's base currency.
+    payment_method: PaymentMethod | None = None
+    original_amount: ExactAmount | None = None
+    original_currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
     # Ground truth from the dataset. Used for offline training and evaluation
     # only - online scoring must never read it.
     is_fraud_label: bool | None = None

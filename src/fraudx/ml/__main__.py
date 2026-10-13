@@ -1,6 +1,6 @@
 """ML command line.
 
-python -m fraudx.ml build-features --dataset data/training/synthetic [--redis-db 1]
+python -m fraudx.ml build-features --dataset data/training/synthetic   (uses redis-offline)
 python -m fraudx.ml train --dataset data/training/synthetic [--holdout data/generated]
                           [--register] [--activate]
 """
@@ -12,7 +12,7 @@ import logging
 import sys
 from pathlib import Path
 
-from fraudx.core.config import MongoSettings, RedisSettings
+from fraudx.core.config import MongoSettings, OfflineRedisSettings
 from fraudx.core.logging import configure_logging
 from fraudx.ml import registry, report
 from fraudx.ml.dataset import FeatureMatrix, build, file_sha256, matrix_path
@@ -23,11 +23,17 @@ log = logging.getLogger("fraudx.ml")
 
 
 def _build(args: argparse.Namespace) -> int:
-    live = RedisSettings()
-    if args.redis_db == live.db:
-        log.error("refusing to use Redis db %d: it holds the live feature state", live.db)
+    settings = OfflineRedisSettings().as_redis_settings()
+    redis = redis_client(settings, timeout_s=60)
+    try:
+        redis.ping()
+    except Exception:
+        log.error(
+            "offline Redis not reachable at %s:%d; start it with `make offline-redis`",
+            settings.host,
+            settings.port,
+        )
         return 2
-    redis = redis_client(live.model_copy(update={"db": args.redis_db}), timeout_s=30)
     try:
         matrix = build(args.dataset, redis, batch_size=args.batch_size)
     finally:
@@ -81,7 +87,6 @@ def main(argv: list[str] | None = None) -> int:
 
     b = sub.add_parser("build-features", help="online features for a dataset -> .npz")
     b.add_argument("--dataset", type=Path, default=Path("data/training/synthetic"))
-    b.add_argument("--redis-db", type=int, default=1, help="dedicated Redis db (flushed!)")
     b.add_argument("--batch-size", type=int, default=500)
     b.set_defaults(func=_build)
 

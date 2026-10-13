@@ -1,10 +1,11 @@
 """Builds a training matrix with the *online* feature code.
 
 Events of a dataset directory are replayed in event-time order through
-``OnlineFeatureStore`` against a dedicated, empty Redis database. The live
-feature state is never touched (the live database index is refused), and the
-features are exactly what the feature processor would compute: no
-training/serving skew.
+``OnlineFeatureStore`` against the disposable offline Redis (compose service
+``redis-offline``), never the live one. The features are exactly what the
+feature processor would compute: no training/serving skew. The
+per-transaction result cache is disabled (nothing is redelivered offline,
+and it would double memory).
 
 Output ``features_v<FEATURE_VERSION>.npz`` (next to the dataset):
 ``X`` (float32, NaN = missing), ``y`` (0/1), ``event_ms`` (int64),
@@ -89,7 +90,7 @@ def build(dataset_dir: Path, redis: Redis, batch_size: int = 500) -> FeatureMatr
             truth[row["transaction_id"]] = (int(row["is_fraud"]), row["scenario"])
 
     redis.flushdb()
-    store = OnlineFeatureStore(redis)
+    store = OnlineFeatureStore(redis, cache_results=False)
     rows: list[list[float]] = []
     labels, times, ids, scenarios = [], [], [], []
     try:
@@ -102,7 +103,7 @@ def build(dataset_dir: Path, redis: Redis, batch_size: int = 500) -> FeatureMatr
                 times.append(int(event.event_time.timestamp() * 1000))
                 ids.append(event.transaction_id)
                 scenarios.append(scenario)
-            if len(rows) % 50_000 < batch_size:
+            if len(rows) % 250_000 < batch_size:
                 log.info("features built for %d events", len(rows))
     finally:
         redis.flushdb()  # offline state is disposable; free the memory

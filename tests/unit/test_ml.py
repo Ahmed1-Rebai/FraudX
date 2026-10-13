@@ -9,7 +9,7 @@ from fraudx.ml import report
 from fraudx.ml.dataset import FeatureMatrix
 from fraudx.ml.model import FraudModel, IncompatibleModelError
 from fraudx.ml.train import best_f1_threshold, evaluate, save, time_split, train
-from fraudx.ml.vectorize import FEATURE_NAMES, TYPE_CODES, vectorize
+from fraudx.ml.vectorize import CATEGORICAL, FEATURE_GROUPS, FEATURE_NAMES, TYPE_CODES, vectorize
 
 EVENT = TransactionEvent.model_validate({
     "transaction_id": "TX-1", "event_time": "2026-01-01T02:00:00Z", "customer_id": "C-1",
@@ -53,12 +53,15 @@ def test_threshold_and_metrics():
     assert m["by_scenario"]["travel"]["false_positive_rate"] == 0.0
 
 
-def _toy_matrix(n=4000, seed=0):
+def _toy_matrix(n=6000, seed=0):
     rng = np.random.default_rng(seed)
     X = rng.normal(size=(n, len(FEATURE_NAMES))).astype(np.float32)
-    X[:, FEATURE_NAMES.index("transaction_type")] = rng.integers(0, 5, n)
+    # Categorical columns hold small non-negative integer codes, as in vectorize().
+    for column in CATEGORICAL:
+        X[:, FEATURE_NAMES.index(column)] = rng.integers(0, 5, n)
     signal = X[:, FEATURE_NAMES.index("cust_txn_count_5m")]
-    y = (signal + rng.normal(scale=0.3, size=n) > 2.2).astype(np.int8)
+    # ~3.5 % positives: enough (~30) in the test split for a stable PR-AUC.
+    y = (signal + rng.normal(scale=0.3, size=n) > 1.8).astype(np.int8)
     return FeatureMatrix(
         X=X, y=y, event_ms=np.arange(n, dtype=np.int64),
         transaction_id=np.array([f"TX-{i}" for i in range(n)]),
@@ -80,7 +83,7 @@ def test_training_learns_signal_and_records_everything(trained):
     assert metadata["metrics"]["test"]["pr_auc"] > 0.8
     assert {"valid", "test", "holdout", "split"} <= set(metadata["metrics"])
     assert {c["name"] for c in metadata["candidates"]} == {"unweighted", "sqrt_balanced"}
-    assert set(metadata["ablations"]) == {"without_balance", "without_network"}
+    assert set(metadata["ablations"]) == {f"without_{g}" for g in FEATURE_GROUPS}
     assert result.importance[0][0] == "cust_txn_count_5m"
     assert version.endswith("-aaaaaaaa")
     assert (path / "model.txt").exists()

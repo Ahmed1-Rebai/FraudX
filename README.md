@@ -20,7 +20,10 @@ retrieved from four purpose-built NoSQL stores.
 
 > **Status:** Phases 0–5 are complete: replayed transactions flow through Kafka, get online
 > features in Redis, and land in Cassandra, MongoDB and Neo4j.
-> A versioned LightGBM model is trained and registered. Anomaly detection (Phase 6) is next.
+> A versioned LightGBM model is trained and registered.
+> The public-dataset pipeline (`fraudx.datasets`, ADR-024/025) profiles, cleans and
+> canonicalizes PaySim and IBM AML HI-Small (reports in [`docs/data/`](docs/data/README.md));
+> their feature/train stages are next, then anomaly detection (Phase 6).
 
 ## Quick start
 

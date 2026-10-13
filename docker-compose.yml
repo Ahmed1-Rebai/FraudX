@@ -168,6 +168,26 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # Disposable Redis for offline feature builds (training data). Separate from
+  # the live store so big builds never evict live state. No persistence;
+  # "noeviction" makes an over-sized build fail loudly instead of silently
+  # producing wrong features. Start with: docker compose --profile jobs up -d redis-offline
+  redis-offline:
+    image: redis:8.2-alpine
+    profiles: ["jobs"]
+    command: ["sh", "-c", "exec redis-server --save '' --appendonly no --maxmemory 10gb --maxmemory-policy noeviction --requirepass \"$$REDIS_PASSWORD\""]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    ports:
+      - "127.0.0.1:6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: "no"
+
   neo4j:
     image: neo4j:5.26-community
     environment:

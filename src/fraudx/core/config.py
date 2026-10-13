@@ -88,6 +88,24 @@ class RedisSettings(BaseSettings):
     password: SecretStr
 
 
+class OfflineRedisSettings(BaseSettings):
+    """Disposable Redis for offline feature builds (compose service ``redis-offline``).
+
+    Separate from the live feature store so that large training builds
+    never compete with, or evict, live state.
+    """
+
+    model_config = SettingsConfigDict(**_ENV, env_prefix="REDIS_OFFLINE_")
+
+    host: str = "localhost"
+    port: int = 6380
+    password: SecretStr | None = None  # falls back to REDIS_PASSWORD
+
+    def as_redis_settings(self) -> RedisSettings:
+        password = self.password or RedisSettings().password
+        return RedisSettings(host=self.host, port=self.port, db=0, password=password)
+
+
 class Neo4jSettings(BaseSettings):
     model_config = SettingsConfigDict(**_ENV, env_prefix="NEO4J_")
 
