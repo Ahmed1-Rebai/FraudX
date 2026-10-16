@@ -3,7 +3,7 @@
 Persistent project memory. **Read this first** when resuming work; update it
 at the end of every work session (progress, issues, decisions, next tasks).
 
-Last updated: 2026-10-13 (public-dataset pipeline: PaySim + IBM AML profiled, cleaned, canonicalized, reported; features/train pending)
+Last updated: 2026-10-16 (full project review; PaySim trained 2026-10-14, IBM AML features built, not trained; see "Review 2026-10-16" in Known issues)
 
 ---
 
@@ -196,9 +196,15 @@ Grafana `:3000`.
 **Phase 5 + generator v2 complete; public-dataset pipeline in place.** The
 PaySim and IBM AML datasets are downloaded and **profiled, cleaned and
 canonicalized** (`data/processed/{paysim,ibm_aml}/`, all git-ignored) with
-reports in `docs/data/{paysim,ibm_aml}.md`. Next: **build features and train
-on PaySim** (`make paysim`), then the same for IBM AML (`make ibm-aml`), then
-commit and move to Phase 6 (anomaly detection).
+reports in `docs/data/{paysim,ibm_aml}.md`.
+
+State as of 2026-10-16 (uncommitted): **PaySim features built and model
+trained** (`fraud_lgbm:20261014152329-1d8b4943`, test PR-AUC 0.982, but
+≈0.92 at a comparable prevalence, see Known issues; without balance 0.416).
+It was registered by a throw-away script `register_paysim_model.py` instead of
+`--register`. **IBM AML features built** (`features_v1.npz`, 4,481,694 rows),
+**not trained yet**. Unit 101 pass; integration 24/25 (only `test_api_ready`
+fails when the `api` container isn't running).
 
 Public-dataset canonical sizes (after cleaning):
 - PaySim: 6,362,335 events, 7,928 fraud (0.125 %), 30 days.
@@ -299,6 +305,32 @@ model scores on synthetic data. PaySim is the harder benchmark.
   This is harmless.
 * `kafka-ui` has no healthcheck defined yet (dev tool only, not a dependency
   of any service).
+
+**Review 2026-10-16 (open findings, measured):**
+
+* ~~Graph edge counters drop same-timestamp events.~~ **Fixed 2026-10-16.**
+  The `ts > last_seen` guard couldn't tell a redelivery from a second transfer
+  in the same millisecond. On IBM AML (minute resolution) 97,327 rows (2.2 %,
+  224 of them laundering) share payer, payee and minute. The guard is now
+  `(ts, transaction_id)` with `last_tx` on the edge, and batch rows are sorted
+  by the same key. Regression test: `test_graph_counts_distinct_transactions_with_the_same_timestamp`.
+* **PaySim test PR-AUC is inflated by prevalence.** A row-count time split
+  puts days 15–29 in test (prevalence 0.39 %) and days 13–15 in validation
+  (0.059 %). On test without the flagged `fraud_rate_inflated_period` days,
+  PR-AUC = 0.924 (precision 0.88, recall 0.82); test resampled to validation
+  prevalence = 0.922 ± 0.005. Report these numbers next to 0.982.
+* `register_paysim_model.py` writes a wrong registry doc: 10 of 24
+  `feature_names`, no `threshold` / `feature_version` / `data`, naive local
+  `trained_at` (1 h off), and hand-typed metrics. It also fails ruff. Replace it
+  with a `register` CLI subcommand that reads `metadata.json`, then delete it.
+* The risk engine's alert threshold (70) ignores the model's own threshold
+  (PaySim 0.49, from validation). With ML alone, alerts need p ≥ 0.70. Map or
+  calibrate signals in Phase 8.
+* The NoSQL stores are write-only so far. No code path reads Cassandra,
+  MongoDB profiles or Neo4j. The course's core deliverable needs the read
+  side: API queries per table, graph features, and the Phase 11 benchmarks.
+* Cassandra TWCS tables have no `default_time_to_live`, so TWCS can't drop
+  whole SSTables. Either set a TTL (retention policy) or justify TWCS without one.
 
 ## Architectural decisions
 
@@ -675,19 +707,20 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 ## Next tasks
 
-1. **Finish the public-dataset benchmarks (ADR-024/025):** the profile/clean/
-   canonical/report stages are done for PaySim and IBM AML. Remaining:
-   - `make paysim` → build features (offline Redis) + train + report; check the
-     `balance` and `time` ablations (the `destination_balance_*` leak).
-   - `make ibm-aml` → same; this is the graph-detector benchmark (fan-in/out,
-     cycles). Expect ~35 min for the feature build.
-2. **Commit** the public-dataset pipeline once the reports contain real
-   feature/model numbers.
-3. **Phase 6 – Anomaly detection:** Isolation Forest trained on legitimate
+1. **Finish the public-dataset benchmarks (ADR-024/025):**
+   - PaySim: done (features + model). Add prevalence-matched test metrics to
+     the report, and register through the CLI (see Review 2026-10-16).
+   - IBM AML: features built; run `ml train --dataset data/processed/ibm_aml
+     --register` and the `report` stage.
+2. **Commit** the public-dataset results (the graph-writer guard is fixed).
+3. **Read side of the NoSQL stores** (course core): API endpoints for
+   `transactions_by_customer` / `by_id` / customer profile / subgraph, and the
+   Phase 11 storage benchmarks. Consider doing this before Phases 6/9.
+4. **Phase 6 – Anomaly detection:** Isolation Forest trained on legitimate
    traffic only, from the same feature matrix; scores calibrated to [0, 1]
    (e.g. rank against a validation reference); registered like the
    supervised model.
-4. Then graph features (7), scorer + alerts (8), explainer (9), API endpoints
+5. Then graph features (7), scorer + alerts (8), explainer (9), API endpoints
    + dashboard (10), benchmarks + Grafana dashboards (11).
 
 ## Lessons learned

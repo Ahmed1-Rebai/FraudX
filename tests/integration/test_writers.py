@@ -63,6 +63,21 @@ def test_graph_redelivery_does_not_double_count(graph, run):
     assert (records[0]["count"], records[0]["total"]) == (2, 150.0)
 
 
+def test_graph_counts_distinct_transactions_with_the_same_timestamp(graph, run):
+    writer, driver = graph
+    first, second = _event(run, 1, 0), _event(run, 2, 0, amount=50)  # same minute
+    writer.write([first])
+    writer.write([first, second])  # redelivery of the first + a new same-time transfer
+    writer.write([second])
+    records, _, _ = driver.execute_query(
+        "MATCH (:Account {id: $a})-[t:TRANSFERRED_TO]->(:Account {id: $b}) "
+        "MATCH (:Customer {id: $c})-[u:USES]->(:Device {id: $d}) "
+        "RETURN t.count AS count, t.total_amount AS total, u.count AS uses",
+        a=f"A-{run}", b=f"B-{run}", c=f"C-{run}", d=f"D-{run}",
+    )  # fmt: skip
+    assert (records[0]["count"], records[0]["total"], records[0]["uses"]) == (2, 150.0, 2)
+
+
 def test_graph_cash_in_flows_from_agent_and_devices_are_shared(graph, run):
     writer, driver = graph
     writer.write([

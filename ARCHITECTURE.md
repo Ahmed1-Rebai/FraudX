@@ -220,10 +220,10 @@ operations per event), with approximate window edges.
 
 ```text
 (:Customer)-[:OWNS]->(:Account)
-(:Customer)-[:USES {first_seen,last_seen,count}]->(:Device)
-(:Device)-[:CONNECTED_FROM {first_seen,last_seen,count}]->(:IP)
+(:Customer)-[:USES {first_seen,last_seen,last_tx,count}]->(:Device)
+(:Device)-[:CONNECTED_FROM {first_seen,last_seen}]->(:IP)
 (:IP)-[:LOCATED_IN]->(:Location)
-(:Account)-[:TRANSFERRED_TO {count,total_amount,first_seen,last_seen}]->(:Account)
+(:Account)-[:TRANSFERRED_TO {count,total_amount,first_seen,last_seen,last_tx}]->(:Account)
 ```
 
 Transactions are **aggregated onto edges**, not stored as nodes (ADR-004);
@@ -232,9 +232,12 @@ the graph grows with entities, not events. Merchants are `Account` nodes with
 confirmation) drives `fraud_neighbor_count` and `distance_to_known_fraud`.
 Uniqueness constraints on every id back the `MERGE` writes. The graph
 writer runs three `UNWIND` statements per batch in one transaction. Edge
-counters only advance when the event is newer than the edge's `last_seen`.
-Counted edges always include the event's own customer or account, whose
-events arrive in order on one partition, so redelivery never double-counts.
+counters only advance when the event comes after the last counted one in
+`(event_time, transaction_id)` order (`last_seen`, `last_tx`). Counted edges
+always include the event's own customer or account, whose events arrive in
+order on one partition, so redelivery never double-counts, and distinct
+transactions with the same timestamp are all counted (IBM AML has minute
+resolution).
 `CASH_IN` edges point from the agent/merchant to the customer (direction of
 money). Merchant accounts are high-degree hubs; graph features should
 exclude `kind = "MERCHANT"` from traversals.

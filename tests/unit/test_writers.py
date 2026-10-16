@@ -123,6 +123,7 @@ def test_sink_skips_write_when_nothing_valid():
 
 def test_graph_row_direction_and_kinds():
     row = to_row(_event())
+    assert row["tx"] == _event().transaction_id  # tie-breaker of the counter guard
     assert row["outgoing"] is True
     assert (row["source_kind"], row["destination_kind"]) == ("CUSTOMER", "MERCHANT")
     assert row["location_id"] == "TN|Sfax"
