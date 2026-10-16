@@ -190,6 +190,12 @@ Grafana `:3000`.
       Offline builds moved to a disposable `redis-offline` service
       (`OnlineFeatureStore(cache_results=False)`); `ml build-features` refuses
       to run without it. Polars added. Tests: 101 unit, 24 integration
+- [x] **Read side + storage benchmarks (ADR-027):** `storage.readers`
+      (Cassandra single-partition reads, MongoDB `_id` lookup, Neo4j patterns
+      anchored on one customer); API `GET /transactions/{id}`,
+      `/customers/{id}`, `/customers/{id}/transactions`, `/customers/{id}/network`
+      (store clients connected on first use); `python -m fraudx.bench` /
+      `make bench` → `docs/benchmarks/storage.md`
 - [x] **Review fixes (2026-10-16):** graph counter guard on
       `(event_time, transaction_id)`; `ml register` command;
       prevalence-matched PR-AUC/precision in every report. **Benchmarks
@@ -223,9 +229,9 @@ Public-dataset canonical sizes (after cleaning):
 
 **Datasets (v2):** demo `data/generated` 65,292 events / 265 fraud (0.41 %);
 training `data/training/synthetic` 336,653 / 684 (0.20 %).
-⚠ The **live stack still holds v1 demo data** (replayed earlier). Reset with
-`make clean && make up && make replay` to stream v2 (this also wipes the
-MongoDB model registry: re-run `make train`).
+The live stack holds the **v2 demo dataset** (replayed 2026-10-16 through the
+full pipeline). `make clean` wipes it and the MongoDB model registry
+(then `make up && make replay` and `make train`).
 
 Active model `fraud_lgbm:20261016223227-97be2705` (report in
 `docs/experiments/`), trained on v2 with the 24 current features (the
@@ -334,9 +340,8 @@ model scores on synthetic data. PaySim is the harder benchmark.
 * The risk engine's alert threshold (70) ignores the model's own threshold
   (PaySim 0.49, from validation). With ML alone, alerts need p ≥ 0.70. Map or
   calibrate signals in Phase 8.
-* The NoSQL stores are write-only so far. No code path reads Cassandra,
-  MongoDB profiles or Neo4j. The course's core deliverable needs the read
-  side: API queries per table, graph features, and the Phase 11 benchmarks.
+* ~~The NoSQL stores are write-only.~~ **Fixed 2026-10-16:** read endpoints
+  (`storage.readers` → API) and `make bench` (see ADR-027).
 * Cassandra TWCS tables have no `default_time_to_live`, so TWCS can't drop
   whole SSTables. Either set a TTL (retention policy) or justify TWCS without one.
 
@@ -551,6 +556,31 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 - **Impact:** `fraudx.ml`; the scorer (Phase 8) loads the active registry
   version with `FraudModel`.
 
+### ADR-027: Read side: one store per query; benchmarks on the production code path
+- **Decision:** The API reads each store through `fraudx.storage.readers` with
+  queries its data model serves in one step: Cassandra single-partition reads
+  (`transactions_by_id`, one customer-day), MongoDB `_id` lookup, Neo4j
+  patterns anchored on one customer. There is no `GET /transactions` list: a
+  global scan is not a Cassandra query; history is browsed per customer-day.
+  Store clients are created on first request. The storage benchmark reuses the
+  production schema, `HistoryWriter` and `HistoryReader` in an isolated
+  `fraudx_bench` keyspace / `bench_transactions` collection / `fx:bench:` keys,
+  dropped afterwards.
+- **Reason:** The course is about choosing the right NoSQL model per access
+  pattern; the read side is where that shows. Benchmarking the real code path
+  (not a toy schema) makes the numbers meaningful for this system.
+- **Advantages:** Latency independent of data volume; API starts while a
+  store is down (`/health/ready` reports it); reproducible numbers (`make bench`).
+- **Trade-offs:** The benchmark runs on one local Docker node, so it shows
+  per-node costs, not Cassandra's horizontal write scaling. Measured
+  (`docs/benchmarks/storage.md`, 20k transactions): batch writes MongoDB
+  27.3k/s vs Cassandra 4.0k/s (two tables, Python driver, 64 in flight);
+  read by id p50 MongoDB 0.15 ms vs Cassandra 0.67 ms; customer-day read
+  0.31 vs 0.50 ms; cache lookup Redis 0.08 ms vs MongoDB 0.15 ms; on disk
+  Cassandra 2.75 MiB (two tables) vs MongoDB 2.12 MiB.
+- **Impact:** `storage/readers.py`, `api/stores.py`, `api/routes/{transactions,customers}.py`,
+  `bench.py`, `docs/benchmarks/storage.md`.
+
 ### ADR-026: Offline feature builds run on a disposable Redis
 - **Decision:** Compose service `redis-offline` (profile `jobs`, port 6380,
   10 GB, `noeviction`, no persistence) hosts all training feature builds.
@@ -719,14 +749,11 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 ## Next tasks
 
-1. **Read side of the NoSQL stores** (course core): API endpoints for
-   `transactions_by_customer` / `by_id` / customer profile / subgraph, and the
-   Phase 11 storage benchmarks. Consider doing this before Phases 6/9.
-2. **Phase 6 – Anomaly detection:** Isolation Forest trained on legitimate
+1. **Phase 6 – Anomaly detection:** Isolation Forest trained on legitimate
    traffic only, from the same feature matrix; scores calibrated to [0, 1]
    (e.g. rank against a validation reference); registered like the
    supervised model.
-3. Then graph features (7), scorer + alerts (8), explainer (9), API endpoints
+2. Then graph features (7), scorer + alerts (8), explainer (9), API endpoints
    + dashboard (10), benchmarks + Grafana dashboards (11).
 
 ## Lessons learned

@@ -14,7 +14,8 @@ from prometheus_client import make_asgi_app
 
 from fraudx import __version__
 from fraudx.api.metrics import MetricsMiddleware
-from fraudx.api.routes import health
+from fraudx.api.routes import customers, health, transactions
+from fraudx.api.stores import Stores
 from fraudx.core.config import (
     CassandraSettings,
     KafkaSettings,
@@ -40,23 +41,27 @@ def build_probe() -> DependencyProbe:
     )
 
 
-def create_app(probe: DependencyProbe | None = None) -> FastAPI:
+def create_app(probe: DependencyProbe | None = None, stores: Stores | None = None) -> FastAPI:
     settings = get_app_settings()
     configure_logging(settings.log_level, settings.log_format)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.probe = probe or build_probe()
+        app.state.stores = stores or Stores()
         log.info("api started", extra={"version": __version__, "env": settings.env})
         try:
             yield
         finally:
+            app.state.stores.close()
             app.state.probe.close()
             log.info("api stopped")
 
     app = FastAPI(title="FraudX API", version=__version__, lifespan=lifespan)
     app.add_middleware(MetricsMiddleware)
     app.include_router(health.router)
+    app.include_router(transactions.router)
+    app.include_router(customers.router)
     app.mount("/metrics", make_asgi_app())
     return app
 

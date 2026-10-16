@@ -66,10 +66,11 @@ failed sink never blocks scoring, and any stage can be replayed from Kafka.
 | `storage` writers | **done** | `graph-writer` (Neo4j), `history-writer` (Cassandra), `profile-writer` (MongoDB): batched, idempotent sinks, `python -m fraudx.storage graph\|history\|profile` |
 | `ml` | **done** | Offline training (LightGBM) on features built by the online code; versioned artifacts + MongoDB registry; `FraudModel` for inference (§6.1) |
 | `scoring` scorer | Phase 6–8 | Rules + LightGBM + Isolation Forest + graph features → risk engine |
+| `bench` | **done** | Storage benchmarks: MongoDB vs Cassandra (write/read latency, throughput, size), MongoDB vs Redis (`make bench`) |
 | `scoring.risk` | **done** | Weighted, configurable 0–100 score with rule floors and missing-signal handling |
 | `alerts` | Phase 8 | Deliver alerts from `fraud.alerts` |
 | `explain` | Phase 9 | Evidence retrieval → deterministic template or LLM explanation |
-| `api` | **health done** | REST API aggregating the stores; `/health`, `/health/ready`, `/metrics` |
+| `api` | **read side done** | REST API aggregating the stores (`storage.readers`): transactions (Cassandra), customer profile (MongoDB), customer network (Neo4j); `/health`, `/health/ready`, `/metrics` |
 | frontend | Phase 10 | React + TypeScript dashboard |
 
 All Python services are entrypoints of **one package** (`src/fraudx`) built into

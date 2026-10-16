@@ -49,6 +49,16 @@ Without make: `cp .env.example .env && docker compose up -d --wait`.
 
 If port 8000 is busy, set `API_PORT` in `.env`.
 
+API endpoints (each one reads the store whose data model fits the query):
+
+| Endpoint | Store | Query |
+|---|---|---|
+| `GET /transactions/{id}` | Cassandra | `transactions_by_id`, one partition |
+| `GET /customers/{id}` | MongoDB | customer profile by `_id` |
+| `GET /customers/{id}/transactions?day=&limit=` | Cassandra | one customer-day partition, newest first (default day: last activity, from MongoDB) |
+| `GET /customers/{id}/network?limit=` | Neo4j | devices shared with other customers, money flows with counterparties |
+| `GET /health`, `/health/ready`, `/metrics/` | all | liveness, dependency readiness, Prometheus |
+
 ## Development
 
 ```bash
@@ -61,6 +71,7 @@ make data               # generate the synthetic dataset (data/generated)
 make data-train && make features && make train   # train + register the fraud model
 make replay             # publish it to transactions.raw (ARGS="--rate 500 --rebase-time")
 make tail T=transactions.raw ARGS="--from-beginning -n 3"
+make bench              # storage benchmarks -> docs/benchmarks/storage.md
 make help               # every command
 ```
 
@@ -101,5 +112,5 @@ fraudx/
 | 6–7 | Anomaly detection, graph features | next |
 | 8 | Scorer service, risk engine integration, alerts | |
 | 9 | Evidence-grounded explanations (template / LLM) | |
-| 10 | API endpoints and React dashboard | |
-| 11 | Benchmarks and Grafana dashboards | |
+| 10 | API endpoints and React dashboard | read endpoints done |
+| 11 | Benchmarks and Grafana dashboards | storage benchmarks done |

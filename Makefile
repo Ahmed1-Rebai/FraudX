@@ -3,7 +3,7 @@
 COMPOSE := docker compose
 INFRA := kafka kafka-init mongodb cassandra cassandra-init redis neo4j neo4j-init
 
-.PHONY: data data-train features train offline-redis download-datasets paysim ibm-aml replay tail help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
+.PHONY: data data-train features train offline-redis download-datasets paysim ibm-aml bench replay tail help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -62,6 +62,9 @@ ibm-aml: offline-redis ## IBM AML: profile -> clean -> canonicalize -> features 
 	uv run python -m fraudx.ml build-features --dataset data/processed/ibm_aml
 	uv run python -m fraudx.ml train --dataset data/processed/ibm_aml --register
 	uv run python -m fraudx.datasets ibm_aml --stages report
+
+bench: ## Storage benchmarks (MongoDB vs Cassandra, MongoDB vs Redis) -> docs/benchmarks/storage.md
+	set -a && . ./.env && set +a && uv run python -m fraudx.bench $(ARGS)
 
 replay: ## Publish data/generated to transactions.raw (ARGS="--rate 500 --rebase-time")
 	uv run python -m fraudx.ingestion replay $(ARGS)
