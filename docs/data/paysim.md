@@ -213,6 +213,13 @@ Top features (gain share): `amount_log` 73%, `balance_drain_ratio` 21%, `cust_am
 | fraud_transfer | 1,869 | 0.9754 |
 | normal | 950,622 | 0.0001 |
 
+Detectors trained on this dataset (test set; matched = at the dataset's fraud rate):
+
+| detector | model | PR-AUC | PR-AUC matched | ROC-AUC |
+| --- | --- | --- | --- | --- |
+| supervised (LightGBM, transaction features) | `20261016223525-1d8b4943` | 0.982 | 0.9567 | 0.9973 |
+| anomaly (Isolation Forest, legitimate traffic) | `20261016225024-1d8b4943` | 0.078 | 0.0291 | 0.8101 |
+
 ## 8. Limitations
 
 - Synthetic (simulated from aggregated real logs), not real customer data.

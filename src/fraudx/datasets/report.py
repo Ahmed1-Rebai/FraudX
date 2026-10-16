@@ -30,9 +30,19 @@ def _fmt(n: Any) -> str:
     return f"{n:,}" if isinstance(n, int) else str(n)
 
 
-def _latest_model(models_dir: Path, dataset_dir: Path) -> dict[str, Any] | None:
+DETECTORS = {
+    "fraud_lgbm": "supervised (LightGBM, transaction features)",
+    "anomaly_iforest": "anomaly (Isolation Forest, legitimate traffic)",
+    "graph_lgbm": "graph (LightGBM, graph features)",
+}
+
+
+def _latest_model(
+    models_dir: Path, dataset_dir: Path, name: str = "fraud_lgbm"
+) -> dict[str, Any] | None:
+    """The most recent model ``name`` trained on ``dataset_dir``."""
     found = []
-    for meta in models_dir.glob("*/*/metadata.json"):
+    for meta in models_dir.glob(f"{name}/*/metadata.json"):
         data = json.loads(meta.read_text(encoding="utf-8"))
         if Path(data["data"]["dataset"]) == dataset_dir:
             found.append(data)
@@ -220,6 +230,27 @@ def render(info: DatasetInfo, out_dir: Path, models_dir: Path = Path("models")) 
             ]
     else:
         lines.append("_No model trained on this dataset yet._")
+
+    detectors = {n: m for n in DETECTORS if (m := _latest_model(models_dir, out_dir, n))}
+    if len(detectors) > 1:
+        lines += [
+            "",
+            "Detectors trained on this dataset (test set; matched = at the dataset's fraud rate):",
+            "",
+            *_table(
+                ["detector", "model", "PR-AUC", "PR-AUC matched", "ROC-AUC"],
+                [
+                    [
+                        DETECTORS[n],
+                        f"`{m['version']}`",
+                        m["metrics"]["test"]["pr_auc"],
+                        m["metrics"]["test"].get("at_reference_prevalence", {}).get("pr_auc", "-"),
+                        m["metrics"]["test"]["roc_auc"],
+                    ]
+                    for n, m in detectors.items()
+                ],
+            ),
+        ]
 
     lines += ["", "## 8. Limitations", "", *(f"- {item}" for item in info.limitations), ""]
     return "\n".join(lines)

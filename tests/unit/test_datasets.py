@@ -1,6 +1,7 @@
 """Public dataset pipelines on small fixtures where every cleaning rule fires."""
 
 import csv
+import json
 from decimal import Decimal
 
 import polars as pl
@@ -9,6 +10,7 @@ import pytest
 from fraudx.core.schemas import PaymentMethod
 from fraudx.datasets import ibm_aml, paysim
 from fraudx.datasets.__main__ import run
+from fraudx.datasets.report import _latest_model
 
 # --- PaySim ------------------------------------------------------------------------
 
@@ -224,3 +226,16 @@ def test_full_stage_run_writes_artefacts_and_report(aml_raw, tmp_path):
         assert heading in text
     assert "`self_transfers`" in text and "CDLA-Sharing-1.0" in text
     assert pl.read_parquet(out / "cleaned.parquet").height == 203
+
+
+def test_report_picks_the_supervised_model_not_a_newer_detector(tmp_path):
+    dataset = tmp_path / "data"
+    for name, trained_at in (("fraud_lgbm", "2026-01-01"), ("anomaly_iforest", "2026-02-01")):
+        out = tmp_path / "models" / name / "v1"
+        out.mkdir(parents=True)
+        meta = {"name": name, "trained_at": trained_at, "data": {"dataset": str(dataset)}}
+        (out / "metadata.json").write_text(json.dumps(meta))
+    assert _latest_model(tmp_path / "models", dataset)["name"] == "fraud_lgbm"
+    assert (
+        _latest_model(tmp_path / "models", dataset, "anomaly_iforest")["name"] == "anomaly_iforest"
+    )

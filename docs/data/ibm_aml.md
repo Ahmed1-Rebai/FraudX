@@ -261,6 +261,13 @@ Top features (gain share): `amount_log` 23%, `payment_method` 16%, `seconds_sinc
 | scatter_gather | 102 | 0.3725 |
 | stack | 77 | 0.4545 |
 
+Detectors trained on this dataset (test set; matched = at the dataset's fraud rate):
+
+| detector | model | PR-AUC | PR-AUC matched | ROC-AUC |
+| --- | --- | --- | --- | --- |
+| supervised (LightGBM, transaction features) | `20261016223640-22c237be` | 0.1468 | 0.1244 | 0.9728 |
+| anomaly (Isolation Forest, legitimate traffic) | `20261016225038-22c237be` | 0.0019 | 0.0015 | 0.6179 |
+
 ## 8. Limitations
 
 - Synthetic (calibrated simulator), not real bank data.
