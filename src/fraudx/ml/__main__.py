@@ -3,7 +3,9 @@
 python -m fraudx.ml build-features --dataset data/training/synthetic   (uses redis-offline)
 python -m fraudx.ml train --dataset data/training/synthetic [--holdout data/generated]
                           [--register] [--activate]
-python -m fraudx.ml register models/fraud_lgbm/<version> [--activate]
+python -m fraudx.ml train-anomaly --dataset data/training/synthetic [--holdout data/generated]
+                                  [--register] [--activate]
+python -m fraudx.ml register models/<name>/<version> [--activate]
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from typing import Any
 
 from fraudx.core.config import MongoSettings, OfflineRedisSettings
 from fraudx.core.logging import configure_logging
-from fraudx.ml import registry, report
+from fraudx.ml import anomaly, registry, report
 from fraudx.ml.dataset import FeatureMatrix, build, file_sha256, matrix_path
 from fraudx.ml.train import save, train
 from fraudx.storage.clients import mongo_client, redis_client
@@ -73,6 +75,30 @@ def _train(args: argparse.Namespace) -> int:
     return 0
 
 
+def _train_anomaly(args: argparse.Namespace) -> int:
+    path = matrix_path(args.dataset)
+    if not path.exists():
+        log.error("%s not found; run build-features first", path)
+        return 2
+    holdout = FeatureMatrix.load(matrix_path(args.holdout)) if args.holdout else None
+    model = anomaly.train(FeatureMatrix.load(path), file_sha256(path), str(args.dataset), holdout)
+    out = model.save(args.models_dir)
+    metadata = model.metadata
+    report_path = (
+        args.reports_dir
+        / f"{metadata['trained_at'][:10]}-{metadata['name']}-{metadata['version']}.md"
+    )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(report.render_anomaly(metadata), encoding="utf-8")
+    test = metadata["metrics"]["test"]
+    log.info("anomaly model %s saved to %s; test PR-AUC %.4f, recall %.3f at %.2f; report %s",
+             metadata["version"], out, test["pr_auc"], test["recall"], metadata["threshold"],
+             report_path)  # fmt: skip
+    if args.register or args.activate:
+        _record(metadata, out, args.activate)
+    return 0
+
+
 def _register(args: argparse.Namespace) -> int:
     path = args.artifact / "metadata.json"
     if not path.exists():
@@ -115,6 +141,15 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--register", action="store_true", help="record in MongoDB model_registry")
     t.add_argument("--activate", action="store_true", help="register and mark as active")
     t.set_defaults(func=_train)
+
+    a = sub.add_parser("train-anomaly", help="train the Isolation Forest anomaly detector")
+    a.add_argument("--dataset", type=Path, default=Path("data/training/synthetic"))
+    a.add_argument("--holdout", type=Path, help="dataset dir evaluated out-of-sample")
+    a.add_argument("--models-dir", type=Path, default=Path("models"))
+    a.add_argument("--reports-dir", type=Path, default=Path("docs/experiments"))
+    a.add_argument("--register", action="store_true", help="record in MongoDB model_registry")
+    a.add_argument("--activate", action="store_true", help="register and mark as active")
+    a.set_defaults(func=_train_anomaly)
 
     r = sub.add_parser("register", help="record a saved model in MongoDB model_registry")
     r.add_argument("artifact", type=Path, help="model directory: models/<name>/<version>")

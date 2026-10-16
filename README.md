@@ -18,12 +18,13 @@ retrieved from four purpose-built NoSQL stores.
 - Engineering memory (decisions, progress, conventions): [memory.md](memory.md)
 - Original specification: [FraudX_README.md](FraudX_README.md)
 
-> **Status:** Phases 0–5 are complete: replayed transactions flow through Kafka, get online
-> features in Redis, and land in Cassandra, MongoDB and Neo4j.
-> A versioned LightGBM model is trained and registered.
-> The public-dataset pipeline (`fraudx.datasets`, ADR-024/025) profiles, cleans and
-> canonicalizes PaySim and IBM AML HI-Small (reports in [`docs/data/`](docs/data/README.md));
-> their feature/train stages are next, then anomaly detection (Phase 6).
+> **Status:** Phases 0–6 are complete: replayed transactions flow through Kafka, get online
+> features in Redis, and land in Cassandra, MongoDB and Neo4j, which the API reads back.
+> A versioned LightGBM model and an Isolation Forest anomaly detector are trained and
+> registered, on the synthetic data and on PaySim and IBM AML HI-Small (reports in
+> [`docs/data/`](docs/data/README.md) and [`docs/experiments/`](docs/experiments/)).
+> Storage benchmarks are in [`docs/benchmarks/`](docs/benchmarks/storage.md).
+> Next: graph features (Phase 7), then the scorer and alerts (Phase 8).
 
 ## Quick start
 
@@ -109,7 +110,8 @@ fraudx/
 | 3 | Feature processor (Redis online features) | done |
 | 4 | Store writers: Cassandra, MongoDB, Neo4j | done |
 | 5 | Supervised model (LightGBM, offline training, registry) | done |
-| 6–7 | Anomaly detection, graph features | next |
+| 6 | Anomaly detection (Isolation Forest, calibrated) | done |
+| 7 | Graph features | next |
 | 8 | Scorer service, risk engine integration, alerts | |
 | 9 | Evidence-grounded explanations (template / LLM) | |
 | 10 | API endpoints and React dashboard | read endpoints done |

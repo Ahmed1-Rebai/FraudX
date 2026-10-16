@@ -65,7 +65,8 @@ failed sink never blocks scoring, and any stage can be replayed from Kafka.
 | `streaming` feature-processor | **done** | Validate against `TransactionEvent`, dead-letter invalid events, compute online features in Redis (§5.3), publish `FeaturedTransaction` to `transactions.features` |
 | `storage` writers | **done** | `graph-writer` (Neo4j), `history-writer` (Cassandra), `profile-writer` (MongoDB): batched, idempotent sinks, `python -m fraudx.storage graph\|history\|profile` |
 | `ml` | **done** | Offline training (LightGBM) on features built by the online code; versioned artifacts + MongoDB registry; `FraudModel` for inference (§6.1) |
-| `scoring` scorer | Phase 6–8 | Rules + LightGBM + Isolation Forest + graph features → risk engine |
+| `ml.anomaly` | **done** | Isolation Forest on legitimate traffic, calibrated to a percentile (§6.2) |
+| `scoring` scorer | Phase 7–8 | Rules + LightGBM + Isolation Forest + graph features → risk engine |
 | `bench` | **done** | Storage benchmarks: MongoDB vs Cassandra (write/read latency, throughput, size), MongoDB vs Redis (`make bench`) |
 | `scoring.risk` | **done** | Weighted, configurable 0–100 score with rule floors and missing-signal handling |
 | `alerts` | Phase 8 | Deliver alerts from `fraud.alerts` |
@@ -288,6 +289,24 @@ dataset dir ──build-features──► features_v1.npz ──train──► m
   register <artifact>` records a saved model from its own `metadata.json`.
 * **Version** = `<UTC timestamp>-<sha256(features file)[:8]>`, which ties a
   model to its exact training data.
+
+### 6.2 Anomaly detector (`fraudx.ml.anomaly`)
+
+* **Isolation Forest** (200 trees, 256 samples each) fitted on the
+  **legitimate** rows of the training split only: it learns normal traffic
+  and needs no labels to score. Same feature matrix and time split as §6.1,
+  numeric features only (categorical codes have no distance); missing values
+  are filled with training medians stored in the artifact.
+* **Calibrated signal:** the raw score becomes its percentile among
+  legitimate validation traffic, so 0.99 means "more unusual than 99 % of
+  normal transactions" on every dataset. This is the risk engine's
+  `anomaly` signal.
+* Evaluated with the same report as §6.1 at threshold 0.99. "Unusual" is not
+  "fraudulent": it catches blunt fraud (takeovers, cash-outs, card testing)
+  and also flags legitimate outliers (large purchases, bursts), so its value
+  is measured as a contribution to the combined score (Phase 8).
+* `python -m fraudx.ml train-anomaly` (part of `make train`); artifacts in
+  `models/anomaly_iforest/<version>/`, registered like §6.1.
 
 ## 7. Explanations (LLM)
 

@@ -37,6 +37,44 @@ def prevalence_table(sets: dict[str, dict[str, Any]]) -> list[str]:
     return [*lines, ""]
 
 
+def _scenario_table(metrics: dict[str, Any]) -> list[str]:
+    lines = [_row(["scenario", "n", "recall / false-positive rate"]), _row(["---"] * 3)]
+    for name, s in metrics.get("by_scenario", {}).items():
+        value = s.get("recall", s.get("false_positive_rate"))
+        kind = "recall" if "recall" in s else "FPR"
+        lines.append(_row([name, s["n"], f"{kind} {value}"]))
+    return lines
+
+
+def render_anomaly(metadata: dict[str, Any]) -> str:
+    """Report for the Isolation Forest detector (``fraudx.ml.anomaly``)."""
+    m = metadata["metrics"]
+    sets = {k: m[k] for k in ("valid", "test", "holdout") if k in m}
+    lines = [
+        f"# Experiment: {metadata['name']} {metadata['version']}",
+        "",
+        f"- Trained: {metadata['trained_at']}",
+        f"- Dataset: `{metadata['data']['dataset']}` (sha256 `{metadata['data']['sha256'][:16]}…`)",
+        f"- Isolation Forest on {metadata['params']['legit_train_rows']:,} legitimate training "
+        f"rows, {len(metadata['feature_names'])} numeric features; split by event time: "
+        f"{m['split']}",
+        "- Score = percentile among legitimate validation traffic; threshold "
+        f"{metadata['threshold']} (the most unusual 1 % of normal traffic). The score is a "
+        "percentile, not a probability, so the Brier score does not apply.",
+        "",
+        "## Metrics",
+        "",
+        *_metrics_table(sets),
+        "",
+        *prevalence_table(sets),
+        "## By scenario (test)",
+        "",
+        *_scenario_table(m["test"]),
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def render(metadata: dict[str, Any]) -> str:
     m = metadata["metrics"]
     n_features = len(metadata["feature_names"])
@@ -69,13 +107,8 @@ def render(metadata: dict[str, Any]) -> str:
         *prevalence_table(sets),
         "## By scenario (test)",
         "",
-        _row(["scenario", "n", "recall / false-positive rate"]),
-        _row(["---"] * 3),
+        *_scenario_table(m["test"]),
     ]  # fmt: skip
-    for name, s in m["test"].get("by_scenario", {}).items():
-        value = s.get("recall", s.get("false_positive_rate"))
-        kind = "recall" if "recall" in s else "FPR"
-        lines.append(_row([name, s["n"], f"{kind} {value}"]))
     lines += [
         "",
         "## Ablations (test)",

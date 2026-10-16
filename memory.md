@@ -190,6 +190,13 @@ Grafana `:3000`.
       Offline builds moved to a disposable `redis-offline` service
       (`OnlineFeatureStore(cache_results=False)`); `ml build-features` refuses
       to run without it. Polars added. Tests: 101 unit, 24 integration
+- [x] **Phase 6, anomaly detector (ADR-028):** `ml.anomaly`: Isolation
+      Forest on legitimate training rows, numeric features, median fill,
+      calibrated to the percentile among legitimate validation traffic;
+      `python -m fraudx.ml train-anomaly` (in `make train/paysim/ibm-aml`).
+      Active `anomaly_iforest:20261016225000-97be2705`. Test PR-AUC: synthetic
+      0.250 (holdout 0.533), PaySim 0.078, IBM AML 0.002 (= base rate).
+      Tests: 109 unit, 29 integration
 - [x] **Read side + storage benchmarks (ADR-027):** `storage.readers`
       (Cassandra single-partition reads, MongoDB `_id` lookup, Neo4j patterns
       anchored on one customer); API `GET /transactions/{id}`,
@@ -556,6 +563,27 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 - **Impact:** `fraudx.ml`; the scorer (Phase 8) loads the active registry
   version with `FraudModel`.
 
+### ADR-028: Anomaly detector: Isolation Forest on legitimate traffic, percentile-calibrated
+- **Decision:** `fraudx.ml.anomaly` fits an Isolation Forest (200 trees, 256
+  samples) on the legitimate rows of the training split, numeric features
+  only, missing values filled with training medians. The raw score is mapped
+  to its percentile among legitimate validation traffic; threshold 0.99.
+- **Reason:** The risk engine needs an `anomaly` signal in [0, 1] whose
+  meaning is stable across datasets; a percentile among normal traffic is
+  that, without labels. Training on legitimate rows keeps known fraud out of
+  "normal". Same matrix and split as the supervised model, so no new
+  feature code.
+- **Advantages:** Label-free, fast (seconds on 6 M rows), interpretable score.
+- **Trade-offs:** Unusual is not fraudulent: on synthetic data it catches
+  takeovers/cash-outs (100 %) and card testing (75 %) but flags large
+  purchases (53 % FPR) and legit bursts (30 %); it misses `app_scam` and
+  slow drip. On IBM AML it is at the base rate (PR-AUC 0.002): laundering
+  looks normal per transaction. Its weight must be justified by its
+  contribution to the combined score (Phase 8), not alone. The artifact is a
+  pickle: only load models trained here.
+- **Impact:** `ml/anomaly.py`, `ml report.render_anomaly`, CLI
+  `train-anomaly`, make targets, ARCHITECTURE §6.2.
+
 ### ADR-027: Read side: one store per query; benchmarks on the production code path
 - **Decision:** The API reads each store through `fraudx.storage.readers` with
   queries its data model serves in one step: Cassandra single-partition reads
@@ -749,12 +777,14 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 ## Next tasks
 
-1. **Phase 6 – Anomaly detection:** Isolation Forest trained on legitimate
-   traffic only, from the same feature matrix; scores calibrated to [0, 1]
-   (e.g. rank against a validation reference); registered like the
-   supervised model.
-2. Then graph features (7), scorer + alerts (8), explainer (9), API endpoints
-   + dashboard (10), benchmarks + Grafana dashboards (11).
+1. **Phase 7 – Graph features:** point-in-time graph features (payee fan-in,
+   payee owner's shared devices, customer ring size, new payee, out-degrees),
+   each excluding the transaction itself; computed by one Neo4j query per
+   batch, live and offline (replay into a disposable `neo4j-offline` with the
+   same query + `GraphWriter`); a LightGBM `graph` signal. Must beat IBM AML
+   PR-AUC 0.147 and catch `app_scam` (0 % today).
+2. Then scorer + alerts with calibrated signals (8), explainer (9), dashboard
+   (10), Grafana dashboards (11).
 
 ## Lessons learned
 
