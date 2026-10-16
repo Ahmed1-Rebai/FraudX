@@ -15,7 +15,7 @@ scrape_configs:
   # Stream workers: DNS discovery finds every replica of a scaled service.
   - job_name: workers
     dns_sd_configs:
-      - names: [feature-processor, graph-writer, history-writer, profile-writer]
+      - names: [feature-processor, scorer, graph-writer, history-writer, profile-writer]
         type: A
         port: 9100
     relabel_configs:
@@ -23,4 +23,3 @@ scrape_configs:
       - source_labels: [__meta_dns_name]
         target_label: service
 
-  # The scorer is added here in Phase 8.

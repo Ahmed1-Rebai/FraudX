@@ -14,7 +14,7 @@ from prometheus_client import make_asgi_app
 
 from fraudx import __version__
 from fraudx.api.metrics import MetricsMiddleware
-from fraudx.api.routes import customers, health, transactions
+from fraudx.api.routes import customers, fraud, health, transactions
 from fraudx.api.stores import Stores
 from fraudx.core.config import (
     CassandraSettings,
@@ -62,6 +62,7 @@ def create_app(probe: DependencyProbe | None = None, stores: Stores | None = Non
     app.include_router(health.router)
     app.include_router(transactions.router)
     app.include_router(customers.router)
+    app.include_router(fraud.router)
     app.mount("/metrics", make_asgi_app())
     return app
 

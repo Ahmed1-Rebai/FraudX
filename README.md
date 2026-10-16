@@ -18,13 +18,16 @@ retrieved from four purpose-built NoSQL stores.
 - Engineering memory (decisions, progress, conventions): [memory.md](memory.md)
 - Original specification: [FraudX_README.md](FraudX_README.md)
 
-> **Status:** Phases 0–7 are complete: replayed transactions flow through Kafka, get online
+> **Status:** Phases 0–8 are complete: replayed transactions flow through Kafka, get online
 > features in Redis, and land in Cassandra, MongoDB and Neo4j, which the API reads back.
 > A versioned LightGBM model, an Isolation Forest anomaly detector and a graph model are
 > trained and registered, on the synthetic data and on PaySim and IBM AML HI-Small (reports in
 > [`docs/data/`](docs/data/README.md) and [`docs/experiments/`](docs/experiments/)).
 > Storage benchmarks are in [`docs/benchmarks/`](docs/benchmarks/storage.md).
-> Graph features (Phase 7) feed a third, graph-based model. Next: the scorer and alerts (Phase 8).
+> Graph features (Phase 7) feed a third, graph-based model. The scorer (Phase 8) combines
+> the three calibrated signals and two rules into a 0–100 risk score for every transaction
+> and raises alerts (live: precision 0.79, recall 0.88 on the demo data).
+> Next: explanations (Phase 9) and the dashboard (Phase 10).
 
 ## Quick start
 
@@ -58,6 +61,9 @@ API endpoints (each one reads the store whose data model fits the query):
 | `GET /customers/{id}` | MongoDB | customer profile by `_id` |
 | `GET /customers/{id}/transactions?day=&limit=` | Cassandra | one customer-day partition, newest first (default day: last activity, from MongoDB) |
 | `GET /customers/{id}/network?limit=` | Neo4j | devices shared with other customers, money flows with counterparties |
+| `GET /customers/{id}/risk` | Redis | latest risk score, set by the scorer in real time |
+| `GET /fraud/alerts?day=&level=&limit=` | Cassandra | MEDIUM/HIGH transactions of a day (8 bucket partitions merged) |
+| `POST /transactions/simulate` | Kafka | inject a transaction into the live pipeline; read it back with `GET /transactions/{id}` |
 | `GET /health`, `/health/ready`, `/metrics/` | all | liveness, dependency readiness, Prometheus |
 
 ## Development
@@ -112,7 +118,7 @@ fraudx/
 | 5 | Supervised model (LightGBM, offline training, registry) | done |
 | 6 | Anomaly detection (Isolation Forest, calibrated) | done |
 | 7 | Graph features and graph model | done |
-| 8 | Scorer service, risk engine integration, alerts | |
+| 8 | Scorer service, calibrated risk engine, alerts | done |
 | 9 | Evidence-grounded explanations (template / LLM) | |
 | 10 | API endpoints and React dashboard | read endpoints done |
 | 11 | Benchmarks and Grafana dashboards | storage benchmarks done |

@@ -12,9 +12,16 @@ from typing import Any
 
 from fastapi import Request
 
-from fraudx.core.config import CassandraSettings, MongoSettings, Neo4jSettings
+from fraudx.core.config import (
+    CassandraSettings,
+    KafkaSettings,
+    MongoSettings,
+    Neo4jSettings,
+    RedisSettings,
+)
+from fraudx.messaging.producer import EventProducer
 from fraudx.storage import clients
-from fraudx.storage.readers import GraphReader, HistoryReader, ProfileReader
+from fraudx.storage.readers import GraphReader, HistoryReader, ProfileReader, RiskReader
 
 
 class Stores:
@@ -31,6 +38,13 @@ class Stores:
 
     def graph(self) -> GraphReader:
         return self._get("graph", self._connect_graph)
+
+    def risk(self) -> RiskReader:
+        return self._get("risk", self._connect_risk)
+
+    def producer(self) -> EventProducer:
+        """Publishes simulated transactions to Kafka."""
+        return self._get("producer", self._connect_producer)
 
     def close(self) -> None:
         with self._lock:
@@ -61,6 +75,16 @@ class Stores:
         client = clients.mongo_client(settings)
         self._closers.append(client.close)
         return ProfileReader(client[settings.db])
+
+    def _connect_risk(self) -> RiskReader:
+        client = clients.redis_client(RedisSettings())
+        self._closers.append(client.close)
+        return RiskReader(client)
+
+    def _connect_producer(self) -> EventProducer:
+        producer = EventProducer(KafkaSettings(), "api")
+        self._closers.append(lambda: producer.flush(5))
+        return producer
 
     def _connect_graph(self) -> GraphReader:
         driver = clients.neo4j_driver(Neo4jSettings())

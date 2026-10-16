@@ -85,5 +85,10 @@ def assess(
     )
 
 
+def floor(level: RiskLevel, config: RiskConfig) -> int:
+    """The minimum score a rule of ``level`` imposes: the level's threshold."""
+    return config.thresholds.high if level == RiskLevel.HIGH else config.thresholds.medium
+
+
 def should_alert(assessment: RiskAssessment, config: RiskConfig) -> bool:
     return assessment.score >= config.alert_threshold

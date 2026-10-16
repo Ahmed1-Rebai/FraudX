@@ -190,6 +190,14 @@ Grafana `:3000`.
       Offline builds moved to a disposable `redis-offline` service
       (`OnlineFeatureStore(cache_results=False)`); `ml build-features` refuses
       to run without it. Polars added. Tests: 101 unit, 24 integration
+- [x] **Phase 8, scorer (ADR-030/031):** `scoring.scorer` (`python -m
+      fraudx.scoring`, compose `scorer`): calibrated signals + rules → risk
+      engine → `transactions.scored` / `fraud.alerts` / Redis latest risk;
+      history and profile writers moved to `transactions.scored` (risk
+      columns, `risk_events_by_day`, `risk_profile`); API `/fraud/alerts`,
+      `/customers/{id}/risk`, `POST /transactions/simulate`. Live replay of the
+      demo data: alert precision 0.790, recall 0.879 (offline 0.792 / 0.876).
+      Tests: 122 unit, 32 integration
 - [x] **Phase 7, graph features (ADR-029):** `storage.graph_features` (6
       point-in-time features, one Neo4j query per batch), offline build by
       replay into `neo4j-offline` (`build-graph-features`), graph model
@@ -569,6 +577,26 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 - **Impact:** `fraudx.ml`; the scorer (Phase 8) loads the active registry
   version with `FraudModel`.
 
+### ADR-031: Scorer runtime: graceful degradation, hot model reload, writers on the scored stream
+- **Decision:** One scorer service (batch 500) computes graph features
+  (Neo4j), three calibrated signals and rules per batch. A Neo4j error drops
+  only the graph signal for that batch; no model at all retries (lag). Active
+  model ids are checked every 60 s and reloaded on change. History and
+  profile writers consume `transactions.scored` (planned in ADR-021); the
+  graph writer stays on `transactions.features`. `rule_hits` became
+  `frozen<list<text>>`.
+- **Reason:** ADR-008's missing-signal semantics need a real degraded mode,
+  not a stall. One Cassandra write per transaction including its risk (no
+  second update pass). A non-frozen collection INSERT writes a tombstone to
+  clear the old value: one tombstone per scored row.
+- **Trade-offs:** History now depends on the scorer being up (Kafka keeps
+  the backlog, so nothing is lost). Changing `rule_hits` to frozen needed a
+  one-time keyspace drop and re-provision on the dev stack (2026-10-16);
+  Cassandra was refilled by replaying `transactions.scored`.
+- **Impact:** `scoring/scorer.py`, `scoring/__main__.py`, compose `scorer`
+  (mounts `./models`, `./config`), `storage/{history,profile}_writer.py`,
+  `storage/sink.py`, `schema.cql`, ARCHITECTURE §6.4.
+
 ### ADR-030: Risk engine: calibrated signals, weights and thresholds tuned on validation
 - **Decision:** Keep the spec's weighted average (ADR-008), but (a) every
   signal is a calibrated fraud probability (isotonic regression on
@@ -838,13 +866,24 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 1. IBM AML graph features + graph model (build running, ~1.5–2 h): compare
    with the supervised baseline 0.147.
-2. **Phase 8 – scorer + alerts:** calibrated signals (isotonic P(fraud|score)
-   stored with each model), weights/thresholds tuned on validation
-   (`tune-risk`), rules `takeover_pattern` (HIGH) and
-   `burst_on_shared_device` (MEDIUM); then explainer (9), dashboard (10),
-   Grafana dashboards (11).
+2. **Phase 9 – alerts → investigations + explanations:** an alert handler on
+   `fraud.alerts` creates the MongoDB investigation (status OPEN) with
+   evidence and an evidence-grounded template explanation (optional LLM);
+   API `/fraud/{tx}`, `/fraud/{tx}/explanation`, analyst status update.
+3. Dashboard (10), Grafana dashboards (11).
 
 ## Lessons learned
+
+* Inserting a **non-frozen** Cassandra collection writes a tombstone first
+  (to replace the old value). Use `frozen<...>` for values written whole, and
+  bind empty collections as UNSET.
+* `git stash -u` during a long background job removes files a *new* process
+  of that job may import; verify a commit in a separate `git worktree`.
+* `pkill -f <pattern>` also matches the shell that runs it when the pattern
+  appears in its own command line.
+* A tool that selects "the latest model" must filter by model name once
+  several model kinds share `models/` (the dataset report crashed on an
+  Isolation Forest artifact).
 
 * Since MongoDB 4.0.5, `listDatabases` doesn't fail for unprivileged users; it
   returns only the databases they can access. To test least privilege, use a

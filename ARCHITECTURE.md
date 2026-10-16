@@ -50,9 +50,9 @@ single, defensible responsibility.
 Each arrow out of a topic is an **independent consumer group**: a slow or
 failed sink never blocks scoring, and any stage can be replayed from Kafka.
 
-> **Until the scorer exists (Phase 8)**, the history and profile writers
-> consume `transactions.features` and leave risk columns unset (ADR-021).
-> Then they switch to `transactions.scored`.
+The history and profile writers consume `transactions.scored` (ADR-021), so
+every Cassandra row and MongoDB profile carries its risk. The graph writer
+consumes `transactions.features`: the scorer reads the graph it builds.
 
 ## 3. Components
 
@@ -67,12 +67,12 @@ failed sink never blocks scoring, and any stage can be replayed from Kafka.
 | `ml` | **done** | Offline training (LightGBM) on features built by the online code; versioned artifacts + MongoDB registry; `FraudModel` for inference (§6.1) |
 | `ml.anomaly` | **done** | Isolation Forest on legitimate traffic, calibrated to a percentile (§6.2) |
 | `storage.graph_features` | **done** | Point-in-time graph features from Neo4j + graph model (§6.3) |
-| `scoring` scorer | Phase 8 | Rules + LightGBM + Isolation Forest + graph features → risk engine |
+| `scoring` scorer | **done** | `python -m fraudx.scoring`: calibrated ml/anomaly/graph signals + rules → risk engine → `transactions.scored`, `fraud.alerts`, latest risk in Redis (§6.4) |
 | `bench` | **done** | Storage benchmarks: MongoDB vs Cassandra (write/read latency, throughput, size), MongoDB vs Redis (`make bench`) |
 | `scoring.risk` | **done** | Weighted, configurable 0–100 score with rule floors and missing-signal handling |
 | `alerts` | Phase 8 | Deliver alerts from `fraud.alerts` |
 | `explain` | Phase 9 | Evidence retrieval → deterministic template or LLM explanation |
-| `api` | **read side done** | REST API aggregating the stores (`storage.readers`): transactions (Cassandra), customer profile (MongoDB), customer network (Neo4j); `/health`, `/health/ready`, `/metrics` |
+| `api` | **done (Phase 8)** | REST API aggregating the stores (`storage.readers`): transactions and alert feed (Cassandra), profile (MongoDB), network (Neo4j), latest risk (Redis), `POST /transactions/simulate` (Kafka); `/health`, `/health/ready`, `/metrics` |
 | frontend | Phase 10 | React + TypeScript dashboard |
 
 All Python services are entrypoints of **one package** (`src/fraudx`) built into
@@ -273,6 +273,27 @@ level = HIGH if score ≥ high, MEDIUM if ≥ medium, else LOW     (config/risk.
   scorer only loads a registered, versioned artifact.
 * Evaluation uses precision, recall, F1, ROC-AUC and **PR-AUC (primary)** with a
   time-based split. Accuracy is not used because of class imbalance.
+
+### 6.4 Scorer (`fraudx.scoring`)
+
+* Consumes `transactions.features` in batches of 500: vectorises the
+  transactions, reads their graph features from Neo4j in one query, scores
+  the three calibrated signals, evaluates the rules and calls the risk
+  engine. Publishes every `ScoredTransaction` (event, features, graph
+  features, risk, model versions) to `transactions.scored`, alerts to
+  `fraud.alerts`, and the customer's latest risk to Redis.
+* **Degradation:** a Neo4j error scores the batch without the graph signal
+  (`missing_signals`, metric `fraudx_signal_missing_total`) rather than
+  stopping. With no model at all the batch is retried (visible as lag).
+* **Model updates:** the active versions in `model_registry` are checked every
+  minute and reloaded when they change; artifacts and `config/risk.yaml` are
+  mounted read-only, so retraining or re-tuning needs no image rebuild
+  (restart the scorer for a new config).
+* **Live = offline:** replaying the demo dataset through the running stack
+  gives alert precision 0.790 / recall 0.879, against 0.792 / 0.876 in the
+  offline holdout evaluation.
+* Metrics: `fraudx_scored_total{level}`, `fraudx_alerts_total`,
+  `fraudx_risk_score`, `fraudx_rule_hits_total{rule}`.
 
 ### 6.1 Supervised model (`fraudx.ml`)
 

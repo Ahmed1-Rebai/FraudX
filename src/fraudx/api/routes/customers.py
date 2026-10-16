@@ -28,6 +28,17 @@ class CustomerProfile(BaseModel):
     risk_profile: dict[str, Any] | None = None
 
 
+class CustomerRisk(BaseModel):
+    """Latest risk, set by the scorer for the customer's most recent transaction."""
+
+    customer_id: str
+    score: int
+    level: str
+    transaction_id: str
+    event_time: datetime
+    scored_at: datetime
+
+
 class CustomerDay(BaseModel):
     customer_id: str
     day: date
@@ -70,6 +81,15 @@ def _profile(stores: Stores, customer_id: str) -> dict[str, Any]:
 def get_customer(customer_id: str, stores: StoresDep):
     """Customer profile (MongoDB primary-key lookup)."""
     return _profile(stores, customer_id)
+
+
+@router.get("/{customer_id}/risk", response_model=CustomerRisk)
+def get_customer_risk(customer_id: str, stores: StoresDep):
+    """The customer's latest risk score (Redis, updated by the scorer in real time)."""
+    risk = stores.risk().latest(customer_id)
+    if risk is None:
+        raise HTTPException(status_code=404, detail="no risk scored for this customer")
+    return {"customer_id": customer_id, **risk}
 
 
 @router.get("/{customer_id}/transactions", response_model=CustomerDay)

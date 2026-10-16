@@ -6,10 +6,15 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from fraudx.core.config import CassandraSettings, MongoSettings, Neo4jSettings
-from fraudx.core.schemas import TransactionEvent
+from fraudx.core.schemas import (
+    RiskAssessment,
+    ScoredTransaction,
+    TransactionEvent,
+    TransactionFeatures,
+)
 from fraudx.storage import clients
 from fraudx.storage.graph_writer import GraphWriter
-from fraudx.storage.history_writer import HistoryWriter
+from fraudx.storage.history_writer import HistoryWriter, bucket
 from fraudx.storage.profile_writer import MAX_RECENT, ProfileWriter
 
 pytestmark = pytest.mark.integration
@@ -181,3 +186,51 @@ def test_profile_idempotent_bounded_and_order_insensitive(profiles, run):
     assert len(devices) == MAX_RECENT
     assert devices[-1] == f"D{MAX_RECENT + 9}-{run}"  # most recent kept
     db.devices.delete_many({"_id": {"$regex": f"^D\\d+-{run}$"}})
+
+
+# --- scored transactions (Phase 8) -------------------------------------------------
+
+
+def _scored(event, score, level, rules=()):
+    features = TransactionFeatures(
+        cust_txn_count_5m=1, cust_txn_count_1h=1, cust_txn_count_24h=1, cust_amount_sum_5m=1,
+        cust_amount_sum_1h=1, cust_amount_sum_24h=1, cust_history_count=0, is_new_device=False,
+        is_new_ip=False, is_new_country=False, hour_of_day=9,
+    )  # fmt: skip
+    risk = RiskAssessment(score=score, level=level, components={"ml": score / 100},
+                          rule_hits=tuple(rules), assessed_at=T0)  # fmt: skip
+    return ScoredTransaction(event=event, features=features, risk=risk, scored_at=T0)
+
+
+def test_history_scored_rows_and_alert_feed(history, run):
+    writer, session = history
+    low, high = _event(run, 1, minutes=1), _event(run, 2, minutes=2)
+    writer.write_scored([_scored(low, 3, "LOW"), _scored(high, 91, "HIGH", ["takeover_pattern"])])
+    row = session.execute("SELECT risk_score, risk_level, rule_hits FROM transactions_by_id "
+                          "WHERE transaction_id = %s", (high.transaction_id,)).one()  # fmt: skip
+    assert (row.risk_score, row.risk_level, row.rule_hits) == (91, "HIGH", ["takeover_pattern"])
+    feed = [
+        r.transaction_id
+        for b in range(8)
+        for r in session.execute(
+            "SELECT transaction_id FROM risk_events_by_day WHERE event_date = %s AND bucket = %s",
+            (T0.date(), b),
+        )
+        if r.transaction_id.startswith(f"TX-{run}")
+    ]
+    assert feed == [high.transaction_id]  # LOW stays out of the alert feed
+    session.execute("DELETE FROM risk_events_by_day WHERE event_date = %s AND bucket = %s "
+                    "AND event_time = %s AND transaction_id = %s",
+                    (T0.date(), bucket(high.transaction_id), high.event_time,
+                     high.transaction_id))  # fmt: skip
+
+
+def test_profile_risk_is_the_latest_by_event_time(profiles, run):
+    writer, db = profiles
+    newer, older = _event(run, 2, minutes=60), _event(run, 1, minutes=0)
+    writer.write_scored([_scored(newer, 12, "MEDIUM")])
+    writer.write_scored([_scored(older, 95, "HIGH")])  # late redelivery of an older event
+    profile = db.customers.find_one({"_id": f"C-{run}"})["risk_profile"]
+    assert (profile["score"], profile["level"], profile["transaction_id"]) == (
+        12, "MEDIUM", newer.transaction_id,
+    )  # fmt: skip

@@ -274,6 +274,24 @@ services:
       redis:
         condition: service_healthy
 
+  # Scores every featured transaction with the active models (registry in
+  # MongoDB, artifacts mounted from ./models) and the tuned config/risk.yaml.
+  scorer:
+    <<: *worker
+    command: ["python", "-m", "fraudx.scoring"]
+    volumes:
+      - ./models:/app/models:ro
+      - ./config:/app/config:ro
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      neo4j-init:
+        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   graph-writer:
     <<: *worker
     command: ["python", "-m", "fraudx.storage", "graph"]

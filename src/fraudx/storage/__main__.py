@@ -6,6 +6,7 @@ import argparse
 import sys
 from collections.abc import Callable
 from contextlib import ExitStack
+from typing import Any
 
 from prometheus_client import start_http_server
 
@@ -18,40 +19,42 @@ from fraudx.core.config import (
     get_app_settings,
 )
 from fraudx.core.logging import configure_logging
-from fraudx.core.topics import TRANSACTIONS_FEATURES
+from fraudx.core.topics import TRANSACTIONS_FEATURES, TRANSACTIONS_SCORED
 from fraudx.messaging.consumer import StreamWorker
 from fraudx.messaging.producer import EventProducer
 from fraudx.storage import clients
 from fraudx.storage.graph_writer import GraphWriter
 from fraudx.storage.history_writer import HistoryWriter
 from fraudx.storage.profile_writer import ProfileWriter
-from fraudx.storage.sink import SinkHandler, Writer
+from fraudx.storage.sink import ScoredSinkHandler, SinkHandler
 
 
-def _graph(stack: ExitStack) -> Writer:
+def _graph(stack: ExitStack) -> GraphWriter:
     driver = clients.neo4j_driver(Neo4jSettings(), timeout_s=10)
     stack.callback(driver.close)
     return GraphWriter(driver)
 
 
-def _history(stack: ExitStack) -> Writer:
+def _history(stack: ExitStack) -> HistoryWriter:
     settings = CassandraSettings()
     cluster = clients.cassandra_cluster(settings, timeout_s=10)
     stack.callback(cluster.shutdown)
     return HistoryWriter(clients.cassandra_session(cluster), settings.keyspace)
 
 
-def _profile(stack: ExitStack) -> Writer:
+def _profile(stack: ExitStack) -> ProfileWriter:
     settings = MongoSettings()
     client = clients.mongo_client(settings, timeout_ms=10_000)
     stack.callback(client.close)
     return ProfileWriter(client[settings.db])
 
 
-WRITERS: dict[str, Callable[[ExitStack], Writer]] = {
-    "graph": _graph,
-    "history": _history,
-    "profile": _profile,
+# The graph is built from every featured transaction (the scorer reads it);
+# history and profiles are written once the transaction is scored (ADR-021).
+WRITERS: dict[str, tuple[Callable[[ExitStack], Any], str]] = {
+    "graph": (_graph, TRANSACTIONS_FEATURES),
+    "history": (_history, TRANSACTIONS_SCORED),
+    "profile": (_profile, TRANSACTIONS_SCORED),
 }
 
 
@@ -69,12 +72,16 @@ def main(argv: list[str] | None = None) -> int:
 
     name = f"{args.writer}-writer"
     with ExitStack() as stack:
-        writer = WRITERS[args.writer](stack)
+        factory, topic = WRITERS[args.writer]
+        writer = factory(stack)
+        handler = (
+            SinkHandler(writer) if topic == TRANSACTIONS_FEATURES else ScoredSinkHandler(writer)
+        )
         worker = StreamWorker(
             name=name,
-            topics=[TRANSACTIONS_FEATURES],
+            topics=[topic],
             handler=None,
-            batch_handler=SinkHandler(writer),
+            batch_handler=handler,
             batch_size=args.batch_size,
             settings=kafka,
             producer=EventProducer(kafka, name),

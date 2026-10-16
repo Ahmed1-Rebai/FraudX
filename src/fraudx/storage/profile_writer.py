@@ -7,7 +7,9 @@ order-insensitive, so redelivery and concurrent writers are safe:
 * ``devices`` / ``known_ips`` / ``countries`` hold the 50 most recently seen
   distinct values (aggregation-pipeline update: remove, append, slice), which
   keeps documents bounded and inside the collection validator;
-* no counters: transaction counts and amounts live in Redis and Cassandra.
+* no counters: transaction counts and amounts live in Redis and Cassandra;
+* ``risk_profile`` is the assessment of the customer's latest transaction by
+  event time, so a redelivered older message never overwrites a newer one.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from typing import Any
 from pymongo import UpdateOne
 from pymongo.database import Database
 
-from fraudx.core.schemas import TransactionEvent
+from fraudx.core.schemas import RiskAssessment, ScoredTransaction, TransactionEvent
 
 MAX_RECENT = 50
 
@@ -38,7 +40,22 @@ def _last(field: str, ts: datetime) -> dict[str, Any]:
     return {"$max": [{"$ifNull": [f"${field}", ts]}, ts]}
 
 
-def customer_update(event: TransactionEvent, now: datetime) -> UpdateOne:
+def _risk_profile(event: TransactionEvent, risk: RiskAssessment, now: datetime) -> dict[str, Any]:
+    """Pipeline expression: this assessment if it is the latest by event time."""
+    latest = {
+        "score": risk.score,
+        "level": risk.level.value,
+        "transaction_id": event.transaction_id,
+        "event_time": event.event_time,
+        "updated_at": now,
+    }
+    previous = {"$ifNull": ["$risk_profile.event_time", datetime.min.replace(tzinfo=UTC)]}
+    return {"$cond": [{"$gte": [event.event_time, previous]}, latest, "$risk_profile"]}
+
+
+def customer_update(
+    event: TransactionEvent, now: datetime, risk: RiskAssessment | None = None
+) -> UpdateOne:
     ts = event.event_time
     fields: dict[str, Any] = {
         "created_at": {"$ifNull": ["$created_at", now]},
@@ -55,6 +72,8 @@ def customer_update(event: TransactionEvent, now: datetime) -> UpdateOne:
         # Home country = first country seen for the customer.
         fields["country"] = {"$ifNull": ["$country", event.location.country]}
         fields["countries"] = _recent("countries", event.location.country)
+    if risk is not None:
+        fields["risk_profile"] = _risk_profile(event, risk, now)
     return UpdateOne({"_id": event.customer_id}, [{"$set": fields}], upsert=True)
 
 
@@ -85,8 +104,14 @@ class ProfileWriter:
         self.db = db
 
     def write(self, events: list[TransactionEvent]) -> None:
+        self._write(events, [None] * len(events))
+
+    def write_scored(self, items: list[ScoredTransaction]) -> None:
+        self._write([i.event for i in items], [i.risk for i in items])
+
+    def _write(self, events: list[TransactionEvent], risks: list[RiskAssessment | None]) -> None:
         now = datetime.now(UTC)
-        customers = [customer_update(e, now) for e in events]
+        customers = [customer_update(e, now, r) for e, r in zip(events, risks, strict=True)]
         accounts = [account_update(e, now) for e in events]
         devices = [device_update(e.device_id, e.event_time) for e in events if e.device_id]
         for collection, ops in (

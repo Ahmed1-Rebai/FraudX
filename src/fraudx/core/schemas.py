@@ -181,3 +181,23 @@ class RiskAssessment(_Contract):
     missing_signals: tuple[str, ...] = ()
     rule_hits: tuple[str, ...] = ()
     assessed_at: datetime
+
+
+class ScoredTransaction(_Contract):
+    """A transaction with its risk assessment (``transactions.scored``, ``fraud.alerts``).
+
+    Carries the inputs of the decision (features, graph features, model
+    versions) so that stores, alerts and explanations need no second lookup.
+    """
+
+    schema_version: int = SCHEMA_VERSION
+    event: TransactionEvent
+    features: TransactionFeatures
+    graph_features: dict[str, float] | None = None
+    risk: RiskAssessment
+    models: dict[str, str] = Field(default_factory=dict, description="signal -> name:version")
+    scored_at: AwareDatetime
+
+    @property
+    def partition_key(self) -> bytes:
+        return self.event.partition_key

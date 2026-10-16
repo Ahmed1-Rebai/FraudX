@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS fraudx.transactions_by_id (
     ml_score            float,
     anomaly_score       float,
     graph_score         float,
-    rule_hits           list<text>,
+    rule_hits           frozen<list<text>>,  -- frozen: written as one value, no tombstone
     is_fraud_label      boolean
 );
 
@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS fraudx.risk_events_by_day (
     transaction_type text,
     risk_score       smallint,
     risk_level       text,
-    rule_hits        list<text>,
+    rule_hits        frozen<list<text>>,
     PRIMARY KEY ((event_date, bucket), event_time, transaction_id)
 ) WITH CLUSTERING ORDER BY (event_time DESC, transaction_id ASC)
   AND compaction = {'class': 'TimeWindowCompactionStrategy',
