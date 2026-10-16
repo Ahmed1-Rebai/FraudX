@@ -190,6 +190,12 @@ Grafana `:3000`.
       Offline builds moved to a disposable `redis-offline` service
       (`OnlineFeatureStore(cache_results=False)`); `ml build-features` refuses
       to run without it. Polars added. Tests: 101 unit, 24 integration
+- [x] **Phase 7, graph features (ADR-029):** `storage.graph_features` (6
+      point-in-time features, one Neo4j query per batch), offline build by
+      replay into `neo4j-offline` (`build-graph-features`), graph model
+      `train --graph` (`graph_lgbm`). Active
+      `graph_lgbm:20261016230327-f3e4f4f4`: synthetic test PR-AUC 0.141
+      alone, but **app_scam recall 100 %** (supervised: 0 %)
 - [x] **Phase 6, anomaly detector (ADR-028):** `ml.anomaly`: Isolation
       Forest on legitimate training rows, numeric features, median fill,
       calibrated to the percentile among legitimate validation traffic;
@@ -563,6 +569,34 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 - **Impact:** `fraudx.ml`; the scorer (Phase 8) loads the active registry
   version with `FraudModel`.
 
+### ADR-029: Graph features: point-in-time Neo4j query, offline replay, separate graph model
+- **Decision:** Six graph features per transaction (`payee_payer_count`,
+  `payee_payee_count`, `payer_payee_count`, `is_new_payee`,
+  `customer_ring_size`, `payee_owner_ring_size`), defined in money-flow terms
+  and **as of the event time** (only edges with `first_seen` before it). One
+  `UNWIND` query per batch, live and offline. Training data comes from
+  replaying the dataset into an empty `neo4j-offline` with the production
+  `GraphWriter`, reading each one-minute group's features before writing it.
+  A separate LightGBM on these features is the `graph` signal.
+- **Reason:** The supervised model misses fraud whose only tell is the
+  payee (`app_scam`: 0 % recall) and laundering structures. Computing graph
+  features with the live query on a replayed graph keeps training and serving
+  identical (the ADR-022 principle), and the `first_seen < event time` filter
+  makes them independent of graph-writer lag. A separate model keeps the
+  signal explainable ("graph risk") and weightable.
+- **Advantages:** No skew, no leakage of the transaction into its own
+  features, anchored (indexed) patterns; the same query serves the scorer.
+- **Trade-offs:** Offline build ≈ 700 events/s (synthetic training set 8 min,
+  IBM AML ~1.5–2 h); live features can be a few seconds stale; PaySim is not
+  built (its graph is nearly empty). Within a one-minute group a transaction
+  doesn't see the others.
+- **Result (synthetic):** graph model alone test PR-AUC 0.141 (holdout 0.218)
+  but app_scam and both takeovers at 100 % recall, new_payee FPR 1.4 %;
+  without the device-ring features 0.011.
+- **Impact:** `storage/graph_features.py`, `ml/graph_dataset.py`, CLI
+  `build-graph-features`, `train --graph`, compose `neo4j-offline`,
+  `make offline-neo4j/features/train/ibm-aml`, ARCHITECTURE §6.3.
+
 ### ADR-028: Anomaly detector: Isolation Forest on legitimate traffic, percentile-calibrated
 - **Decision:** `fraudx.ml.anomaly` fits an Isolation Forest (200 trees, 256
   samples) on the legitimate rows of the training split, numeric features
@@ -777,14 +811,13 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 ## Next tasks
 
-1. **Phase 7 – Graph features:** point-in-time graph features (payee fan-in,
-   payee owner's shared devices, customer ring size, new payee, out-degrees),
-   each excluding the transaction itself; computed by one Neo4j query per
-   batch, live and offline (replay into a disposable `neo4j-offline` with the
-   same query + `GraphWriter`); a LightGBM `graph` signal. Must beat IBM AML
-   PR-AUC 0.147 and catch `app_scam` (0 % today).
-2. Then scorer + alerts with calibrated signals (8), explainer (9), dashboard
-   (10), Grafana dashboards (11).
+1. IBM AML graph features + graph model (build running, ~1.5–2 h): compare
+   with the supervised baseline 0.147.
+2. **Phase 8 – scorer + alerts:** calibrated signals (isotonic P(fraud|score)
+   stored with each model), weights/thresholds tuned on validation
+   (`tune-risk`), rules `takeover_pattern` (HIGH) and
+   `burst_on_shared_device` (MEDIUM); then explainer (9), dashboard (10),
+   Grafana dashboards (11).
 
 ## Lessons learned
 

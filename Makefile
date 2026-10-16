@@ -3,7 +3,7 @@
 COMPOSE := docker compose
 INFRA := kafka kafka-init mongodb cassandra cassandra-init redis neo4j neo4j-init
 
-.PHONY: data data-train features train offline-redis download-datasets paysim ibm-aml bench replay tail help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
+.PHONY: data data-train features train offline-redis offline-neo4j download-datasets paysim ibm-aml bench replay tail help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -39,13 +39,19 @@ data-train: ## Generate the (larger, different-seed) training dataset into data/
 offline-redis: ## Start the disposable Redis used for offline feature builds
 	$(COMPOSE) --profile jobs up -d --wait redis-offline
 
-features: offline-redis ## Build training features with the online feature code for D=<dataset dir>
-	uv run python -m fraudx.ml build-features --dataset $(or $(D),data/training/synthetic)
+offline-neo4j: ## Start the disposable Neo4j used for offline graph-feature builds
+	$(COMPOSE) --profile jobs up -d --wait neo4j-offline
 
-train: offline-redis ## Train + evaluate the fraud and anomaly models (holdout: demo dataset), register and activate them
+features: offline-redis offline-neo4j ## Build transaction + graph features (online code) for D=<dataset dir>
+	uv run python -m fraudx.ml build-features --dataset $(or $(D),data/training/synthetic)
+	uv run python -m fraudx.ml build-graph-features --dataset $(or $(D),data/training/synthetic)
+
+train: offline-redis offline-neo4j ## Train + evaluate the fraud, anomaly and graph models (holdout: demo dataset), register and activate them
 	uv run python -m fraudx.ml build-features --dataset data/generated
+	uv run python -m fraudx.ml build-graph-features --dataset data/generated
 	uv run python -m fraudx.ml train --dataset data/training/synthetic --holdout data/generated --activate $(ARGS)
 	uv run python -m fraudx.ml train-anomaly --dataset data/training/synthetic --holdout data/generated --activate
+	uv run python -m fraudx.ml train --graph --dataset data/training/synthetic --holdout data/generated --activate
 
 download-datasets: ## Download PaySim + IBM AML HI-Small from Kaggle (token in ~/.kaggle/access_token)
 	uvx kaggle datasets download ealaxi/paysim1 -p data/raw/paysim --unzip
@@ -59,11 +65,13 @@ paysim: offline-redis ## PaySim: profile -> clean -> canonicalize -> features ->
 	uv run python -m fraudx.ml train-anomaly --dataset data/processed/paysim --register
 	uv run python -m fraudx.datasets paysim --stages report
 
-ibm-aml: offline-redis ## IBM AML: profile -> clean -> canonicalize -> features -> train -> report
+ibm-aml: offline-redis offline-neo4j ## IBM AML: profile -> clean -> canonicalize -> features -> train -> report
 	uv run python -m fraudx.datasets ibm_aml --stages profile,clean,canonical
 	uv run python -m fraudx.ml build-features --dataset data/processed/ibm_aml
 	uv run python -m fraudx.ml train --dataset data/processed/ibm_aml --register
 	uv run python -m fraudx.ml train-anomaly --dataset data/processed/ibm_aml --register
+	uv run python -m fraudx.ml build-graph-features --dataset data/processed/ibm_aml
+	uv run python -m fraudx.ml train --graph --dataset data/processed/ibm_aml --register
 	uv run python -m fraudx.datasets ibm_aml --stages report
 
 bench: ## Storage benchmarks (MongoDB vs Cassandra, MongoDB vs Redis) -> docs/benchmarks/storage.md

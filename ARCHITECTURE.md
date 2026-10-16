@@ -66,7 +66,8 @@ failed sink never blocks scoring, and any stage can be replayed from Kafka.
 | `storage` writers | **done** | `graph-writer` (Neo4j), `history-writer` (Cassandra), `profile-writer` (MongoDB): batched, idempotent sinks, `python -m fraudx.storage graph\|history\|profile` |
 | `ml` | **done** | Offline training (LightGBM) on features built by the online code; versioned artifacts + MongoDB registry; `FraudModel` for inference (§6.1) |
 | `ml.anomaly` | **done** | Isolation Forest on legitimate traffic, calibrated to a percentile (§6.2) |
-| `scoring` scorer | Phase 7–8 | Rules + LightGBM + Isolation Forest + graph features → risk engine |
+| `storage.graph_features` | **done** | Point-in-time graph features from Neo4j + graph model (§6.3) |
+| `scoring` scorer | Phase 8 | Rules + LightGBM + Isolation Forest + graph features → risk engine |
 | `bench` | **done** | Storage benchmarks: MongoDB vs Cassandra (write/read latency, throughput, size), MongoDB vs Redis (`make bench`) |
 | `scoring.risk` | **done** | Weighted, configurable 0–100 score with rule floors and missing-signal handling |
 | `alerts` | Phase 8 | Deliver alerts from `fraud.alerts` |
@@ -307,6 +308,34 @@ dataset dir ──build-features──► features_v1.npz ──train──► m
   is measured as a contribution to the combined score (Phase 8).
 * `python -m fraudx.ml train-anomaly` (part of `make train`); artifacts in
   `models/anomaly_iforest/<version>/`, registered like §6.1.
+
+### 6.3 Graph features and graph model (`fraudx.storage.graph_features`)
+
+Six features per transaction, read from Neo4j in money-flow terms (payer →
+payee) and **as of the event time**: only edges whose `first_seen` is
+earlier than the transaction count, so a transaction never sees itself and
+an offline replay gives the live values.
+
+| Feature | Pattern |
+|---|---|
+| `payee_payer_count` | other accounts that paid the payee (mule, fan-in) |
+| `payee_payee_count` | accounts the payee paid on (layering) |
+| `payer_payee_count` | other accounts the payer paid (fan-out) |
+| `is_new_payee` | first payment from this payer to this payee |
+| `customer_ring_size` | other customers sharing a device with the customer |
+| `payee_owner_ring_size` | customers sharing a device with the payee's owner (ring mule) |
+
+* One `UNWIND` query per batch, every pattern anchored on the indexed ids of
+  the transaction's customer and accounts.
+* **Training without skew:** `build-graph-features` replays the dataset in
+  event-time order into an empty, disposable `neo4j-offline` (profile `jobs`,
+  RAM-backed). For each group of events (at most one minute of event time,
+  close to live writer lag) it reads features with the same query, then
+  writes the group with the production `GraphWriter`.
+* **Graph signal:** `train --graph` fits LightGBM on the graph features only
+  (`graph_lgbm`, same protocol and report as §6.1). Its probability is the
+  risk engine's `graph` signal; the transaction-feature model stays the `ml`
+  signal, so each signal can be explained and weighted on its own.
 
 ## 7. Explanations (LLM)
 

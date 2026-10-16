@@ -36,15 +36,22 @@ class FraudModel:
         return float(self.metadata["threshold"])
 
     @classmethod
-    def load(cls, artifact_dir: Path) -> FraudModel:
+    def load(
+        cls,
+        artifact_dir: Path,
+        feature_names: tuple[str, ...] = FEATURE_NAMES,
+        feature_version: int = FEATURE_VERSION,
+    ) -> FraudModel:
+        """Defaults check against the transaction features (``fraudx.ml.vectorize``);
+        the graph model passes the graph feature names and version."""
         metadata = json.loads((artifact_dir / "metadata.json").read_text(encoding="utf-8"))
-        if metadata["feature_version"] != FEATURE_VERSION:
+        if metadata["feature_version"] != feature_version:
             raise IncompatibleModelError(
                 f"model expects feature v{metadata['feature_version']}, "
-                f"pipeline produces v{FEATURE_VERSION}"
+                f"pipeline produces v{feature_version}"
             )
-        if tuple(metadata["feature_names"]) != FEATURE_NAMES:
-            raise IncompatibleModelError("model feature names differ from fraudx.ml.vectorize")
+        if tuple(metadata["feature_names"]) != feature_names:
+            raise IncompatibleModelError("model feature names differ from the pipeline's")
         booster = lgb.Booster(model_file=str(artifact_dir / "model.txt"))
         return cls(booster, metadata)
 

@@ -46,10 +46,10 @@ class FeatureMatrix:
     feature_names: tuple[str, ...]
 
     @classmethod
-    def load(cls, path: Path) -> FeatureMatrix:
+    def load(cls, path: Path, expected: tuple[str, ...] = FEATURE_NAMES) -> FeatureMatrix:
         with np.load(path, allow_pickle=False) as data:
             names = tuple(str(n) for n in data["feature_names"])
-            if names != FEATURE_NAMES:
+            if names != expected:
                 raise ValueError(f"{path} was built with different features; rebuild it")
             return cls(
                 X=data["X"],
@@ -82,13 +82,18 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def build(dataset_dir: Path, redis: Redis, batch_size: int = 500) -> FeatureMatrix:
-    """Compute features for every event of ``dataset_dir`` (Redis db is flushed)."""
+def read_ground_truth(dataset_dir: Path) -> dict[str, tuple[int, str]]:
+    """``transaction_id -> (is_fraud, scenario)``."""
     truth: dict[str, tuple[int, str]] = {}
     with (dataset_dir / GROUND_TRUTH_FILE).open(newline="") as fh:
         for row in csv.DictReader(fh):
             truth[row["transaction_id"]] = (int(row["is_fraud"]), row["scenario"])
+    return truth
 
+
+def build(dataset_dir: Path, redis: Redis, batch_size: int = 500) -> FeatureMatrix:
+    """Compute features for every event of ``dataset_dir`` (Redis db is flushed)."""
+    truth = read_ground_truth(dataset_dir)
     redis.flushdb()
     store = OnlineFeatureStore(redis, cache_results=False)
     rows: list[list[float]] = []

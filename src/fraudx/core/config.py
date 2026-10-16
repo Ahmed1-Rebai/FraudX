@@ -114,6 +114,22 @@ class Neo4jSettings(BaseSettings):
     password: SecretStr
 
 
+class OfflineNeo4jSettings(BaseSettings):
+    """Disposable Neo4j for offline graph-feature builds (compose service ``neo4j-offline``).
+
+    A dataset is replayed into it from empty, so builds never touch the live graph.
+    """
+
+    model_config = SettingsConfigDict(**_ENV, env_prefix="NEO4J_OFFLINE_")
+
+    uri: str = "bolt://localhost:7688"
+    password: SecretStr | None = None  # falls back to NEO4J_PASSWORD
+
+    def as_neo4j_settings(self) -> Neo4jSettings:
+        password = self.password or Neo4jSettings().password
+        return Neo4jSettings(uri=self.uri, password=password)
+
+
 # --- Risk engine -------------------------------------------------------------
 
 

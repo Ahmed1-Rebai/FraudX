@@ -1,8 +1,9 @@
 """ML command line.
 
 python -m fraudx.ml build-features --dataset data/training/synthetic   (uses redis-offline)
+python -m fraudx.ml build-graph-features --dataset data/training/synthetic  (uses neo4j-offline)
 python -m fraudx.ml train --dataset data/training/synthetic [--holdout data/generated]
-                          [--register] [--activate]
+                          [--graph] [--register] [--activate]
 python -m fraudx.ml train-anomaly --dataset data/training/synthetic [--holdout data/generated]
                                   [--register] [--activate]
 python -m fraudx.ml register models/<name>/<version> [--activate]
@@ -17,12 +18,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from fraudx.core.config import MongoSettings, OfflineRedisSettings
+from fraudx.core.config import MongoSettings, OfflineNeo4jSettings, OfflineRedisSettings
 from fraudx.core.logging import configure_logging
-from fraudx.ml import anomaly, registry, report
+from fraudx.core.schemas import FEATURE_VERSION
+from fraudx.ml import anomaly, graph_dataset, registry, report
 from fraudx.ml.dataset import FeatureMatrix, build, file_sha256, matrix_path
-from fraudx.ml.train import save, train
-from fraudx.storage.clients import mongo_client, redis_client
+from fraudx.ml.train import MODEL_NAME, save, train
+from fraudx.ml.vectorize import FEATURE_NAMES
+from fraudx.storage.clients import mongo_client, neo4j_driver, redis_client
+from fraudx.storage.graph_features import GRAPH_FEATURE_NAMES, GRAPH_FEATURE_VERSION
 
 log = logging.getLogger("fraudx.ml")
 
@@ -50,15 +54,44 @@ def _build(args: argparse.Namespace) -> int:
     return 0
 
 
-def _train(args: argparse.Namespace) -> int:
-    path = matrix_path(args.dataset)
-    if not path.exists():
-        log.error("%s not found; run build-features first", path)
+def _build_graph(args: argparse.Namespace) -> int:
+    settings = OfflineNeo4jSettings().as_neo4j_settings()
+    driver = neo4j_driver(settings, timeout_s=30)
+    try:
+        driver.verify_connectivity()
+    except Exception:
+        log.error("offline Neo4j not reachable at %s; start it with `make offline-neo4j`",
+                  settings.uri)  # fmt: skip
+        driver.close()
         return 2
-    data = FeatureMatrix.load(path)
-    holdout = FeatureMatrix.load(matrix_path(args.holdout)) if args.holdout else None
+    try:
+        matrix = graph_dataset.build(args.dataset, driver)
+    finally:
+        driver.close()
+    out = graph_dataset.graph_matrix_path(args.dataset)
+    matrix.save(out)
+    log.info("wrote %s: %d rows, %d fraud, %d graph features", out, len(matrix.y),
+             int(matrix.y.sum()), matrix.X.shape[1])  # fmt: skip
+    return 0
+
+
+def _train(args: argparse.Namespace) -> int:
+    if args.graph:  # graph signal: LightGBM on the graph features only
+        path_of, names = graph_dataset.graph_matrix_path, GRAPH_FEATURE_NAMES
+        name, feature_version = "graph_lgbm", GRAPH_FEATURE_VERSION
+    else:
+        path_of, names = matrix_path, FEATURE_NAMES
+        name, feature_version = MODEL_NAME, FEATURE_VERSION
+    path = path_of(args.dataset)
+    if not path.exists():
+        log.error("%s not found; run build-features / build-graph-features first", path)
+        return 2
+    data = FeatureMatrix.load(path, names)
+    holdout = FeatureMatrix.load(path_of(args.holdout), names) if args.holdout else None
     result = train(data, holdout)
-    version, out, metadata = save(result, args.models_dir, file_sha256(path), str(args.dataset))
+    version, out, metadata = save(
+        result, args.models_dir, file_sha256(path), str(args.dataset), name, feature_version
+    )
 
     report_path = (
         args.reports_dir / f"{metadata['trained_at'][:10]}-{metadata['name']}-{version}.md"
@@ -133,11 +166,16 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--batch-size", type=int, default=500)
     b.set_defaults(func=_build)
 
+    g = sub.add_parser("build-graph-features", help="point-in-time graph features -> .npz")
+    g.add_argument("--dataset", type=Path, default=Path("data/training/synthetic"))
+    g.set_defaults(func=_build_graph)
+
     t = sub.add_parser("train", help="train, evaluate and save a versioned model")
     t.add_argument("--dataset", type=Path, default=Path("data/training/synthetic"))
     t.add_argument("--holdout", type=Path, help="dataset dir evaluated out-of-sample")
     t.add_argument("--models-dir", type=Path, default=Path("models"))
     t.add_argument("--reports-dir", type=Path, default=Path("docs/experiments"))
+    t.add_argument("--graph", action="store_true", help="train the graph model (graph_lgbm)")
     t.add_argument("--register", action="store_true", help="record in MongoDB model_registry")
     t.add_argument("--activate", action="store_true", help="register and mark as active")
     t.set_defaults(func=_train)

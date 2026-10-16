@@ -101,7 +101,9 @@ def test_training_learns_signal_and_records_everything(trained):
     assert metadata["metrics"]["test"]["pr_auc"] > 0.8
     assert {"valid", "test", "holdout", "split"} <= set(metadata["metrics"])
     assert {c["name"] for c in metadata["candidates"]} == {"unweighted", "sqrt_balanced"}
-    assert set(metadata["ablations"]) == {f"without_{g}" for g in FEATURE_GROUPS}
+    present = {g for g, cols in FEATURE_GROUPS.items() if set(cols) & set(FEATURE_NAMES)}
+    assert set(metadata["ablations"]) == {f"without_{g}" for g in present}
+    assert "without_graph_devices" not in metadata["ablations"]  # not in this feature set
     assert result.importance[0][0] == "cust_txn_count_5m"
     assert version.endswith("-aaaaaaaa")
     assert (path / "model.txt").exists()

@@ -62,6 +62,8 @@ FEATURE_GROUPS: dict[str, tuple[str, ...]] = {
         "ip_txn_count_1h",
         "ip_customer_count",
     ),
+    # Graph model (fraudx.storage.graph_features): device rings vs money flows.
+    "graph_devices": ("customer_ring_size", "payee_owner_ring_size"),
 }
 
 

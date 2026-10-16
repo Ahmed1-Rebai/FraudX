@@ -209,6 +209,8 @@ def train(data: FeatureMatrix, holdout: FeatureMatrix | None = None) -> Training
     ablations = {}
     for group, columns in FEATURE_GROUPS.items():
         keep = [i for i, n in enumerate(names) if n not in columns]
+        if len(keep) == len(names):
+            continue  # the group isn't in this feature set
         reduced = _fit(X[:, keep], y, split, [names[i] for i in keep], params)
         p = reduced.predict(X[split.test][:, keep])
         ablations[f"without_{group}"] = {
@@ -226,19 +228,24 @@ def train(data: FeatureMatrix, holdout: FeatureMatrix | None = None) -> Training
 
 
 def save(
-    result: TrainingResult, models_dir: Path, data_sha256: str, dataset: str
+    result: TrainingResult,
+    models_dir: Path,
+    data_sha256: str,
+    dataset: str,
+    name: str = MODEL_NAME,
+    feature_version: int = FEATURE_VERSION,
 ) -> tuple[str, Path, dict[str, Any]]:
     """Write ``model.txt`` + ``metadata.json`` under ``<models_dir>/<name>/<version>/``."""
     trained_at = datetime.now(UTC)
     version = f"{trained_at:%Y%m%d%H%M%S}-{data_sha256[:8]}"
-    out = models_dir / MODEL_NAME / version
+    out = models_dir / name / version
     out.mkdir(parents=True, exist_ok=False)
     result.booster.save_model(out / "model.txt", num_iteration=result.booster.best_iteration)
     metadata = {
-        "name": MODEL_NAME,
+        "name": name,
         "version": version,
         "trained_at": trained_at.isoformat(),
-        "feature_version": FEATURE_VERSION,
+        "feature_version": feature_version,
         "feature_names": list(result.booster.feature_name()),
         "threshold": round(result.threshold, 6),
         "params": result.params,
