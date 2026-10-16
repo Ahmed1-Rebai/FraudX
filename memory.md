@@ -3,7 +3,7 @@
 Persistent project memory. **Read this first** when resuming work; update it
 at the end of every work session (progress, issues, decisions, next tasks).
 
-Last updated: 2026-10-16 (full project review; PaySim trained 2026-10-14, IBM AML features built, not trained; see "Review 2026-10-16" in Known issues)
+Last updated: 2026-10-16 (review fixes; PaySim + IBM AML benchmarks trained; synthetic model retrained on 24 features and active; see "Review 2026-10-16" in Known issues)
 
 ---
 
@@ -190,6 +190,12 @@ Grafana `:3000`.
       Offline builds moved to a disposable `redis-offline` service
       (`OnlineFeatureStore(cache_results=False)`); `ml build-features` refuses
       to run without it. Polars added. Tests: 101 unit, 24 integration
+- [x] **Review fixes (2026-10-16):** graph counter guard on
+      `(event_time, transaction_id)`; `ml register` command;
+      prevalence-matched PR-AUC/precision in every report. **Benchmarks
+      trained:** PaySim (test 0.982, matched 0.957), IBM AML (0.147, the
+      graph-detector baseline); synthetic demo model retrained on 24 features
+      and active
 
 ## Current progress
 
@@ -201,18 +207,19 @@ reports in `docs/data/{paysim,ibm_aml}.md`.
 State as of 2026-10-16: **PaySim trained** (`fraud_lgbm:20261016223525-1d8b4943`,
 registered, inactive; deterministic rerun of 20261014152329 with the same
 metrics): test PR-AUC 0.982, **0.957 at the dataset's fraud rate**, 0.416
-without balance features (`docs/data/paysim.md`). **IBM AML features built**
-(`features_v1.npz`, 4,481,694 rows). Unit 101 pass; integration 24/25 (only `test_api_ready`
-fails when the `api` container isn't running).
+without balance features (`docs/data/paysim.md`). **IBM AML trained**
+(`fraud_lgbm:20261016223640-22c237be`, registered, inactive): test PR-AUC
+**0.147** (0.124 at the dataset's rate), recall 0.26 at precision 0.21;
+pattern recall 35–52 %, `laundering_unattributed` 3 %. Without
+`payment_method` PR-AUC falls to 0.037 (ACH carries most laundering), so
+per-transaction features barely see laundering: this is the baseline the
+graph detector (Phase 7) must beat (`docs/data/ibm_aml.md`). The weighted
+candidate early-stopped at iteration 1 on IBM AML (unweighted won).
 
 Public-dataset canonical sizes (after cleaning):
 - PaySim: 6,362,335 events, 7,928 fraud (0.125 %), 30 days.
 - IBM AML: 4,481,694 events, 4,514 laundering (0.101 %), 10 days,
   122,767 customers (corporate hubs; ~35 min per feature build).
-
-⚠ The generated `docs/data/{paysim,ibm_aml}.md` currently state features and
-model are "not built yet": regenerate them with `make paysim` / `make ibm-aml`
-once the offline Redis has run the feature and train stages.
 
 **Datasets (v2):** demo `data/generated` 65,292 events / 265 fraud (0.41 %);
 training `data/training/synthetic` 336,653 / 684 (0.20 %).
@@ -220,8 +227,10 @@ training `data/training/synthetic` 336,653 / 684 (0.20 %).
 `make clean && make up && make replay` to stream v2 (this also wipes the
 MongoDB model registry: re-run `make train`).
 
-Active model `fraud_lgbm:20261007200714-47e7e074` (report in
-`docs/experiments/`), trained on v2:
+Active model `fraud_lgbm:20261016223227-97be2705` (report in
+`docs/experiments/`), trained on v2 with the 24 current features (the
+earlier `20261007200714-47e7e074` has 23 features and no longer loads); its
+metrics equal the earlier run:
 
 | set | PR-AUC | precision | recall |
 |---|---|---|---|
@@ -710,19 +719,14 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 ## Next tasks
 
-1. **Finish the public-dataset benchmarks (ADR-024/025):**
-   - PaySim: done (features, model, matched metrics, report).
-   - IBM AML: features built; run `ml train --dataset data/processed/ibm_aml
-     --register` and the `report` stage.
-2. **Commit** the public-dataset results (the graph-writer guard is fixed).
-3. **Read side of the NoSQL stores** (course core): API endpoints for
+1. **Read side of the NoSQL stores** (course core): API endpoints for
    `transactions_by_customer` / `by_id` / customer profile / subgraph, and the
    Phase 11 storage benchmarks. Consider doing this before Phases 6/9.
-4. **Phase 6 – Anomaly detection:** Isolation Forest trained on legitimate
+2. **Phase 6 – Anomaly detection:** Isolation Forest trained on legitimate
    traffic only, from the same feature matrix; scores calibrated to [0, 1]
    (e.g. rank against a validation reference); registered like the
    supervised model.
-5. Then graph features (7), scorer + alerts (8), explainer (9), API endpoints
+3. Then graph features (7), scorer + alerts (8), explainer (9), API endpoints
    + dashboard (10), benchmarks + Grafana dashboards (11).
 
 ## Lessons learned
