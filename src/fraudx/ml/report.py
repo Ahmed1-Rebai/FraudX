@@ -16,6 +16,27 @@ def _metrics_table(metrics: dict[str, dict[str, Any]]) -> list[str]:
     return lines
 
 
+def prevalence_table(sets: dict[str, dict[str, Any]]) -> list[str]:
+    """PR-AUC and precision as measured and at the dataset's fraud rate."""
+    rows = {k: m for k, m in sets.items() if "at_reference_prevalence" in m}
+    if not rows:
+        return []
+    reference = next(iter(rows.values()))["at_reference_prevalence"]["prevalence"]
+    lines = [
+        f"PR-AUC and precision depend on the fraud rate. Matched = positives reweighted "
+        f"to the dataset's overall rate ({reference:.4%}), so the sets compare:",
+        "",
+        _row(["set", "fraud rate", "PR-AUC", "PR-AUC matched", "precision", "precision matched"]),
+        _row(["---"] * 6),
+    ]
+    for name, m in rows.items():
+        matched = m["at_reference_prevalence"]
+        rate = f"{m['positives'] / m['n']:.4%}"
+        lines.append(_row([name, rate, m["pr_auc"], matched["pr_auc"],
+                           m["precision"], matched["precision"]]))  # fmt: skip
+    return [*lines, ""]
+
+
 def render(metadata: dict[str, Any]) -> str:
     m = metadata["metrics"]
     n_features = len(metadata["feature_names"])
@@ -45,6 +66,7 @@ def render(metadata: dict[str, Any]) -> str:
         "Confusion at the threshold: "
         + "; ".join(f"{k}: {v['confusion']}" for k, v in sets.items()),
         "",
+        *prevalence_table(sets),
         "## By scenario (test)",
         "",
         _row(["scenario", "n", "recall / false-positive rate"]),

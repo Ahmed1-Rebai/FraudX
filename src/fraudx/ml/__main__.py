@@ -3,14 +3,17 @@
 python -m fraudx.ml build-features --dataset data/training/synthetic   (uses redis-offline)
 python -m fraudx.ml train --dataset data/training/synthetic [--holdout data/generated]
                           [--register] [--activate]
+python -m fraudx.ml register models/fraud_lgbm/<version> [--activate]
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 from fraudx.core.config import MongoSettings, OfflineRedisSettings
 from fraudx.core.logging import configure_logging
@@ -66,14 +69,28 @@ def _train(args: argparse.Namespace) -> int:
              report_path)  # fmt: skip
 
     if args.register or args.activate:
-        settings = MongoSettings()
-        client = mongo_client(settings)
-        try:
-            doc_id = registry.register(client[settings.db], metadata, str(out), args.activate)
-        finally:
-            client.close()
-        log.info("registered %s%s", doc_id, " (active)" if args.activate else "")
+        _record(metadata, out, args.activate)
     return 0
+
+
+def _register(args: argparse.Namespace) -> int:
+    path = args.artifact / "metadata.json"
+    if not path.exists():
+        log.error("%s not found; pass a models/<name>/<version> directory", path)
+        return 2
+    _record(json.loads(path.read_text(encoding="utf-8")), args.artifact, args.activate)
+    return 0
+
+
+def _record(metadata: dict[str, Any], artifact: Path, activate: bool) -> None:
+    """Write the artifact's own metadata to the MongoDB model registry."""
+    settings = MongoSettings()
+    client = mongo_client(settings)
+    try:
+        doc_id = registry.register(client[settings.db], metadata, str(artifact), activate)
+    finally:
+        client.close()
+    log.info("registered %s%s", doc_id, " (active)" if activate else "")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -98,6 +115,11 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--register", action="store_true", help="record in MongoDB model_registry")
     t.add_argument("--activate", action="store_true", help="register and mark as active")
     t.set_defaults(func=_train)
+
+    r = sub.add_parser("register", help="record a saved model in MongoDB model_registry")
+    r.add_argument("artifact", type=Path, help="model directory: models/<name>/<version>")
+    r.add_argument("--activate", action="store_true", help="also mark it as active")
+    r.set_defaults(func=_register)
 
     args = parser.parse_args(argv)
     return args.func(args)

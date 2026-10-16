@@ -280,8 +280,11 @@ dataset dir ──build-features──► features_v1.npz ──train──► m
   `scale_pos_weight = sqrt(neg/pos)`, early-stopped on validation PR-AUC;
   threshold = max F1 on validation; test and holdout metrics include per-scenario
   recall / false-positive rate, Brier score, and ablations without the
-  balance and network feature groups. Each run writes a report to
-  `docs/experiments/`.
+  balance and network feature groups. PR-AUC and precision are also reported
+  at the dataset's overall fraud rate (positives reweighted), because they
+  depend on the base rate and the time split gives each set a different one.
+  Each run writes a report to `docs/experiments/`; `python -m fraudx.ml
+  register <artifact>` records a saved model from its own `metadata.json`.
 * **Version** = `<UTC timestamp>-<sha256(features file)[:8]>`, which ties a
   model to its exact training data.
 

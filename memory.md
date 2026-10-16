@@ -198,12 +198,11 @@ PaySim and IBM AML datasets are downloaded and **profiled, cleaned and
 canonicalized** (`data/processed/{paysim,ibm_aml}/`, all git-ignored) with
 reports in `docs/data/{paysim,ibm_aml}.md`.
 
-State as of 2026-10-16 (uncommitted): **PaySim features built and model
-trained** (`fraud_lgbm:20261014152329-1d8b4943`, test PR-AUC 0.982, but
-≈0.92 at a comparable prevalence, see Known issues; without balance 0.416).
-It was registered by a throw-away script `register_paysim_model.py` instead of
-`--register`. **IBM AML features built** (`features_v1.npz`, 4,481,694 rows),
-**not trained yet**. Unit 101 pass; integration 24/25 (only `test_api_ready`
+State as of 2026-10-16: **PaySim trained** (`fraud_lgbm:20261016223525-1d8b4943`,
+registered, inactive; deterministic rerun of 20261014152329 with the same
+metrics): test PR-AUC 0.982, **0.957 at the dataset's fraud rate**, 0.416
+without balance features (`docs/data/paysim.md`). **IBM AML features built**
+(`features_v1.npz`, 4,481,694 rows). Unit 101 pass; integration 24/25 (only `test_api_ready`
 fails when the `api` container isn't running).
 
 Public-dataset canonical sizes (after cleaning):
@@ -314,15 +313,15 @@ model scores on synthetic data. PaySim is the harder benchmark.
   224 of them laundering) share payer, payee and minute. The guard is now
   `(ts, transaction_id)` with `last_tx` on the edge, and batch rows are sorted
   by the same key. Regression test: `test_graph_counts_distinct_transactions_with_the_same_timestamp`.
-* **PaySim test PR-AUC is inflated by prevalence.** A row-count time split
-  puts days 15–29 in test (prevalence 0.39 %) and days 13–15 in validation
-  (0.059 %). On test without the flagged `fraud_rate_inflated_period` days,
-  PR-AUC = 0.924 (precision 0.88, recall 0.82); test resampled to validation
-  prevalence = 0.922 ± 0.005. Report these numbers next to 0.982.
-* `register_paysim_model.py` writes a wrong registry doc: 10 of 24
-  `feature_names`, no `threshold` / `feature_version` / `data`, naive local
-  `trained_at` (1 h off), and hand-typed metrics. It also fails ruff. Replace it
-  with a `register` CLI subcommand that reads `metadata.json`, then delete it.
+* ~~PaySim test PR-AUC is inflated by prevalence.~~ **Reported 2026-10-16.**
+  A row-count time split puts days 15–29 in test (fraud rate 0.39 %) and days
+  13–15 in validation (0.059 %). Reports now add PR-AUC/precision at the
+  dataset's rate (0.125 %): PaySim test 0.982 → **0.957**, validation 0.940 →
+  0.968. (Test without the flagged inflated days: 0.924.)
+* ~~`register_paysim_model.py` wrote a wrong registry doc~~ **Fixed
+  2026-10-16:** `python -m fraudx.ml register <artifact>` records a model from
+  its `metadata.json`; the 2026-10-14 entry was re-registered with it (correct
+  UTC time, threshold, 24 features) and the script deleted.
 * The risk engine's alert threshold (70) ignores the model's own threshold
   (PaySim 0.49, from validation). With ML alone, alerts need p ≥ 0.70. Map or
   calibrate signals in Phase 8.
@@ -516,6 +515,10 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   must be checked against a model without them. Fraud only occurs in
   TRANSFER and CASH_OUT.
 - **Impact:** Phase 5 training scripts and experiment notes in `docs/`.
+- **Update 2026-10-16:** PR-AUC and precision are also reported at the
+  dataset's overall fraud rate (`at_reference_prevalence`, positives
+  reweighted). A time split gives each set a different base rate (PaySim
+  test 0.39 % vs validation 0.059 %), and both metrics move with it.
 
 ### ADR-022: LightGBM, trained on features produced by the online code
 - **Decision:** LightGBM (not XGBoost) for the supervised model. Training
@@ -708,8 +711,7 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 ## Next tasks
 
 1. **Finish the public-dataset benchmarks (ADR-024/025):**
-   - PaySim: done (features + model). Add prevalence-matched test metrics to
-     the report, and register through the CLI (see Review 2026-10-16).
+   - PaySim: done (features, model, matched metrics, report).
    - IBM AML: features built; run `ml train --dataset data/processed/ibm_aml
      --register` and the `report` stage.
 2. **Commit** the public-dataset results (the graph-writer guard is fixed).

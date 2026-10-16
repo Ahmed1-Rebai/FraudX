@@ -10,6 +10,8 @@ Protocol (ADR-016):
 * Metrics: PR-AUC (primary), ROC-AUC, precision/recall/F1 at the threshold,
   Brier score (calibration: the risk engine consumes the probability),
   recall per fraud scenario, false-positive rate per legit scenario.
+* PR-AUC and precision are also reported at the dataset's overall fraud rate
+  (``at_reference_prevalence``), so sets with different fraud rates compare.
 * Ablations: retrain without each feature group (e.g. balance leakage check).
 """
 
@@ -79,8 +81,24 @@ def best_f1_threshold(y: np.ndarray, p: np.ndarray) -> float:
     return float(thresholds[int(np.argmax(f1[:-1]))])
 
 
+def prevalence_weights(y: np.ndarray, prevalence: float) -> np.ndarray:
+    """Sample weights that give ``y`` the positive rate ``prevalence``.
+
+    PR-AUC and precision depend on the base rate, so sets whose fraud rates
+    differ (PaySim's test period has 6x the validation rate) are compared at
+    one reference rate. Positives are reweighted; ranking and recall are unchanged.
+    """
+    pos = float(y.sum())
+    neg = len(y) - pos
+    return np.where(y == 1, prevalence * neg / ((1 - prevalence) * pos), 1.0)
+
+
 def evaluate(
-    y: np.ndarray, p: np.ndarray, threshold: float, scenario: np.ndarray | None = None
+    y: np.ndarray,
+    p: np.ndarray,
+    threshold: float,
+    scenario: np.ndarray | None = None,
+    reference_prevalence: float | None = None,
 ) -> dict[str, Any]:
     pred = p >= threshold
     tp = int(np.sum(pred & (y == 1)))
@@ -100,6 +118,14 @@ def evaluate(
         "brier": round(float(brier_score_loss(y, p)), 6),
         "confusion": {"tp": tp, "fp": fp, "fn": fn, "tn": tn},
     }
+    if reference_prevalence is not None:
+        w = prevalence_weights(y, reference_prevalence)
+        w_pos = float(w[y == 1][0])
+        metrics["at_reference_prevalence"] = {
+            "prevalence": round(reference_prevalence, 6),
+            "pr_auc": round(float(average_precision_score(y, p, sample_weight=w)), 4),
+            "precision": round(w_pos * tp / (w_pos * tp + fp), 4) if tp + fp else 0.0,
+        }
     if scenario is not None:
         per: dict[str, dict[str, Any]] = {}
         for name in sorted(set(scenario.tolist())):
@@ -163,16 +189,21 @@ def train(data: FeatureMatrix, holdout: FeatureMatrix | None = None) -> Training
     _, booster, params = best
 
     threshold = best_f1_threshold(y[split.valid], booster.predict(X[split.valid]))
+    reference = float(y.mean())  # the dataset's fraud rate
     metrics = {
         "split": {k: len(getattr(split, k)) for k in ("train", "valid", "test")},
-        "valid": evaluate(y[split.valid], booster.predict(X[split.valid]), threshold),
-        "test": evaluate(
-            y[split.test], booster.predict(X[split.test]), threshold, data.scenario[split.test]
+        "valid": evaluate(
+            y[split.valid], booster.predict(X[split.valid]), threshold,
+            reference_prevalence=reference,
         ),
-    }
+        "test": evaluate(
+            y[split.test], booster.predict(X[split.test]), threshold, data.scenario[split.test],
+            reference_prevalence=reference,
+        ),
+    }  # fmt: skip
     if holdout is not None:
         metrics["holdout"] = evaluate(
-            holdout.y, booster.predict(holdout.X), threshold, holdout.scenario
+            holdout.y, booster.predict(holdout.X), threshold, holdout.scenario, reference
         )
 
     ablations = {}

@@ -6,6 +6,7 @@ import pytest
 
 from fraudx.core.schemas import TransactionEvent, TransactionFeatures
 from fraudx.ml import report
+from fraudx.ml.__main__ import main
 from fraudx.ml.dataset import FeatureMatrix
 from fraudx.ml.model import FraudModel, IncompatibleModelError
 from fraudx.ml.train import best_f1_threshold, evaluate, save, time_split, train
@@ -51,6 +52,23 @@ def test_threshold_and_metrics():
     assert m["confusion"] == {"tp": 2, "fp": 0, "fn": 1, "tn": 4}
     assert m["by_scenario"]["ato"]["recall"] == pytest.approx(2 / 3, abs=1e-4)
     assert m["by_scenario"]["travel"]["false_positive_rate"] == 0.0
+
+
+def test_prevalence_matched_metrics_equal_a_set_with_that_fraud_rate():
+    y = np.array([0, 0, 0, 1, 1, 0, 1, 0])
+    p = np.array([0.1, 0.6, 0.7, 0.8, 0.9, 0.3, 0.4, 0.2])
+    negatives = y == 0
+    # The same set with every legitimate row twice: a lower fraud rate.
+    y2, p2 = np.concatenate([y, y[negatives]]), np.concatenate([p, p[negatives]])
+    plain = evaluate(y2, p2, threshold=0.5)
+    matched = evaluate(y, p, threshold=0.5, reference_prevalence=float(y2.mean()))
+    assert matched["at_reference_prevalence"]["pr_auc"] == plain["pr_auc"]
+    assert matched["at_reference_prevalence"]["precision"] == plain["precision"]
+    assert matched["recall"] == plain["recall"]  # recall doesn't depend on the rate
+
+
+def test_register_rejects_a_directory_without_metadata(tmp_path):
+    assert main(["register", str(tmp_path)]) == 2
 
 
 def _toy_matrix(n=6000, seed=0):
@@ -113,6 +131,7 @@ def test_report_has_all_sections(trained):
                     "## Feature importance"):  # fmt: skip
         assert heading in text
     assert "| holdout |" in text
+    assert "PR-AUC matched" in text
 
 
 def test_feature_matrix_roundtrip(tmp_path):

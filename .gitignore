@@ -24,6 +24,7 @@ data/training/
 models/*
 !models/.gitkeep
 mlruns/
+logs/
 
 # Notebooks / editors / OS
 .ipynb_checkpoints/

@@ -149,11 +149,69 @@ Canonical dataset: **6,362,335** events, 7,928 positive (0.1246%), 2026-01-01T00
 
 ## 6. Feature engineering
 
-_Not built yet: `python -m fraudx.ml build-features --dataset data/processed/paysim`._
+Features are computed by the platform's **online** feature code (`OnlineFeatureStore`, Redis Lua) replayed in event-time order on a disposable Redis, so training features are identical to what the live pipeline computes.
+Coverage = share of rows where the feature has a value; a feature with one distinct value carries no information on this dataset.
+
+| feature | coverage | distinct values (sample) |
+| --- | --- | --- |
+| amount_log | 100.0% | 201080 |
+| transaction_type | 100.0% | 5 |
+| payment_method | 0.0% | 0 |
+| hour_of_day | 100.0% | 24 |
+| cust_txn_count_5m | 100.0% | 1 |
+| cust_txn_count_1h | 100.0% | 2 |
+| cust_txn_count_24h | 100.0% | 2 |
+| cust_amount_sum_5m | 100.0% | 203588 |
+| cust_amount_sum_1h | 100.0% | 203588 |
+| cust_amount_sum_24h | 100.0% | 203588 |
+| cust_history_count | 100.0% | 2 |
+| cust_amount_mean | 0.1% | 286 |
+| cust_amount_std | 0.0% | 0 |
+| amount_zscore | 0.0% | 0 |
+| amount_to_mean_ratio | 0.1% | 283 |
+| seconds_since_last_txn | 0.1% | 286 |
+| is_new_device | 100.0% | 1 |
+| is_new_ip | 100.0% | 1 |
+| is_new_country | 100.0% | 1 |
+| device_txn_count_1h | 100.0% | 1 |
+| device_customer_count | 100.0% | 1 |
+| ip_txn_count_1h | 100.0% | 1 |
+| ip_customer_count | 100.0% | 1 |
+| balance_drain_ratio | 45.2% | 52105 |
 
 ## 7. Model results
 
-_No model trained on this dataset yet._
+Model `fraud_lgbm:20261016223525-1d8b4943` (LightGBM; time-based 70/15/15 split; threshold 0.4898 chosen on validation).
+
+| set | rows | positives | PR-AUC | ROC-AUC | precision | recall | F1 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| valid | 954,350 | 561 | 0.9401 | 1.0 | 0.8845 | 0.8467 | 0.8652 |
+| test | 954,350 | 3,728 | 0.982 | 0.9973 | 0.9739 | 0.8597 | 0.9132 |
+
+PR-AUC and precision depend on the fraud rate. Matched = positives reweighted to the dataset's overall rate (0.1246%), so the sets compare:
+
+| set | fraud rate | PR-AUC | PR-AUC matched | precision | precision matched |
+| --- | --- | --- | --- | --- | --- |
+| valid | 0.0588% | 0.9401 | 0.9676 | 0.8845 | 0.942 |
+| test | 0.3906% | 0.982 | 0.9567 | 0.9739 | 0.9222 |
+
+Ablations (test PR-AUC without a feature group):
+
+| variant | PR-AUC |
+| --- | --- |
+| full model | 0.982 |
+| without_balance | 0.4162 |
+| without_time | 0.9766 |
+| without_channel | 0.982 |
+| without_network | 0.982 |
+
+Top features (gain share): `amount_log` 73%, `balance_drain_ratio` 21%, `cust_amount_sum_5m` 3%, `cust_amount_sum_1h` 1%, `hour_of_day` 1%, `transaction_type` 0%
+
+| scenario (test) | rows | recall / FPR |
+| --- | --- | --- |
+| fraud_cash_out | 1,859 | 0.7434 |
+| fraud_transfer | 1,869 | 0.9754 |
+| normal | 950,622 | 0.0001 |
 
 ## 8. Limitations
 

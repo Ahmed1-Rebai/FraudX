@@ -15,6 +15,7 @@ import numpy as np
 from fraudx.datasets.base import read_json
 from fraudx.datasets.info import DatasetInfo
 from fraudx.ml.dataset import matrix_path
+from fraudx.ml.report import prevalence_table
 
 
 def _row(cells: list[Any]) -> str:
@@ -146,8 +147,10 @@ def render(info: DatasetInfo, out_dir: Path, models_dir: Path = Path("models")) 
         with np.load(features, allow_pickle=False) as data:
             X, names = data["X"], [str(n) for n in data["feature_names"]]
             coverage = 1 - np.isnan(X).mean(axis=0)
+            # Strided sample over the whole period (the first rows cover only a few hours).
+            sample = X[:: max(1, len(X) // 200_000)]
             distinct = [
-                len(np.unique(X[~np.isnan(X[:, i]), i][:200_000])) for i in range(len(names))
+                len(np.unique(sample[~np.isnan(sample[:, i]), i])) for i in range(len(names))
             ]
         lines += [
             "Features are computed by the platform's **online** feature code "
@@ -190,6 +193,7 @@ def render(info: DatasetInfo, out_dir: Path, models_dir: Path = Path("models")) 
                 ],
             ),
             "",
+            *prevalence_table({k: m[k] for k in ("valid", "test") if k in m}),
             "Ablations (test PR-AUC without a feature group):",
             "",
             *_table(
