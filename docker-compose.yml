@@ -292,6 +292,25 @@ services:
       redis:
         condition: service_healthy
 
+  # Opens a MongoDB investigation with evidence and an explanation per alert.
+  alert-handler:
+    <<: *worker
+    command: ["python", "-m", "fraudx.alerts"]
+    environment:
+      <<: *app-env
+      WORKER_METRICS_PORT: 9100
+      EXPLAIN_PROVIDER: ${EXPLAIN_PROVIDER:-template}
+      EXPLAIN_MODEL: ${EXPLAIN_MODEL:-claude-opus-5-5}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ALERTS_WEBHOOK_URL: ${ALERTS_WEBHOOK_URL:-}
+    volumes:
+      - ./config:/app/config:ro
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
+
   graph-writer:
     <<: *worker
     command: ["python", "-m", "fraudx.storage", "graph"]

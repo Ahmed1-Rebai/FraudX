@@ -48,6 +48,33 @@ class FakeReader:
         return {"customer_id": "C-1", "devices": [], "counterparties": []}
 
 
+INVESTIGATION = {
+    "transaction_id": "TX-1", "customer_id": "C-1", "event_time": T, "status": "OPEN",
+    "risk": {"score": 61, "level": "HIGH", "components": {"ml": 0.9},
+             "rule_hits": ["takeover_pattern"]},
+    "explanation": {"summary": "TRANSFER scored 61/100", "reasons": ["Takeover rule fired."],
+                    "reason_evidence": [["rules.takeover_pattern", "features.balance_drain_ratio"]],
+                    "generator": "template", "created_at": T},
+    "evidence": {"rules.takeover_pattern": True, "features.balance_drain_ratio": 0.95},
+    "created_at": T, "updated_at": T,
+}  # fmt: skip
+
+
+class FakeInvestigations:
+    def __init__(self):
+        self.decisions = []
+
+    def queue(self, status, limit):
+        return [INVESTIGATION] if status == "OPEN" else []
+
+    def get(self, tx):
+        return dict(INVESTIGATION) if tx == "TX-1" else None
+
+    def decide(self, tx, status, note):
+        self.decisions.append((tx, status, note))
+        return {**INVESTIGATION, "status": status, "analyst_note": note} if tx == "TX-1" else None
+
+
 class FakeProducer:
     def __init__(self):
         self.sent = []
@@ -63,6 +90,7 @@ class FakeStores:
     def __init__(self):
         self.reader = FakeReader()
         self.kafka = FakeProducer()
+        self.cases = FakeInvestigations()
         self.closed = False
 
     def history(self):
@@ -72,6 +100,9 @@ class FakeStores:
 
     def producer(self):
         return self.kafka
+
+    def investigations(self):
+        return self.cases
 
     def close(self):
         self.closed = True
@@ -148,3 +179,29 @@ def test_simulate_publishes_a_valid_event_to_the_raw_topic():
     assert (topic, key) == ("transactions.raw", b"C-1")
     assert event.transaction_id == resp.json()["transaction_id"].strip()
     assert event.transaction_id.startswith("SIM-") and event.is_fraud_label is None
+
+
+def test_investigation_queue_detail_and_cited_explanation():
+    client, _ = _client()
+    with client:
+        queue = client.get("/fraud/investigations").json()
+        detail = client.get("/fraud/TX-1").json()
+        explanation = client.get("/fraud/TX-1/explanation").json()
+        assert client.get("/fraud/TX-404").status_code == 404
+    assert [q["transaction_id"] for q in queue] == ["TX-1"] and "evidence" not in queue[0]
+    assert detail["evidence"]["features.balance_drain_ratio"] == 0.95
+    assert explanation["reasons"][0] == {
+        "text": "Takeover rule fired.",
+        "evidence": {"rules.takeover_pattern": True, "features.balance_drain_ratio": 0.95},
+    }
+
+
+def test_analyst_decision():
+    client, stores = _client()
+    with client:
+        resp = client.patch("/fraud/TX-1", json={"status": "FALSE_POSITIVE", "note": "travel"})
+        bad = client.patch("/fraud/TX-1", json={"status": "MAYBE"})
+        missing = client.patch("/fraud/TX-404", json={"status": "DISMISSED"})
+    assert resp.json()["status"] == "FALSE_POSITIVE" and resp.json()["analyst_note"] == "travel"
+    assert (bad.status_code, missing.status_code) == (422, 404)
+    assert stores.cases.decisions[0] == ("TX-1", "FALSE_POSITIVE", "travel")

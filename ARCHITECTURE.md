@@ -39,9 +39,8 @@ single, defensible responsibility.
                  │ score ≥ alert_threshold
                  ▼
         ┌──────────────┐
-        │ fraud.alerts │──► alert-dispatcher (webhook / Slack / email)
-        └──────┬───────┘──► explainer: evidence retrieval ─► template / LLM
-               │                                          └► MONGODB (investigations)
+        │ fraud.alerts │──► alert-handler: evidence ─► template / Claude explanation
+        └──────┬───────┘        └► MONGODB (investigations)  └► webhook (optional)
                ▼
    FastAPI  (reads all four stores; SSE live stream) ──► React dashboard
    Prometheus ◄── /metrics of every service ──► Grafana
@@ -70,8 +69,8 @@ consumes `transactions.features`: the scorer reads the graph it builds.
 | `scoring` scorer | **done** | `python -m fraudx.scoring`: calibrated ml/anomaly/graph signals + rules → risk engine → `transactions.scored`, `fraud.alerts`, latest risk in Redis (§6.4) |
 | `bench` | **done** | Storage benchmarks: MongoDB vs Cassandra (write/read latency, throughput, size), MongoDB vs Redis (`make bench`) |
 | `scoring.risk` | **done** | Weighted, configurable 0–100 score with rule floors and missing-signal handling |
-| `alerts` | Phase 8 | Deliver alerts from `fraud.alerts` |
-| `explain` | Phase 9 | Evidence retrieval → deterministic template or LLM explanation |
+| `alerts` | **done** | `python -m fraudx.alerts`: `fraud.alerts` → MongoDB investigation with evidence + explanation, optional webhook (§7) |
+| `explain` | **done** | Evidence → grounded explanation: deterministic template (default) or Claude (§7) |
 | `api` | **done (Phase 8)** | REST API aggregating the stores (`storage.readers`): transactions and alert feed (Cassandra), profile (MongoDB), network (Neo4j), latest risk (Redis), `POST /transactions/simulate` (Kafka); `/health`, `/health/ready`, `/metrics` |
 | frontend | Phase 10 | React + TypeScript dashboard |
 
@@ -91,7 +90,7 @@ checks the topics match `fraudx.core.topics`.
 | `transactions.features` | customer_id | 6 | 7 d | feature-processor → scorer, graph-writer |
 | `transactions.scored` | customer_id | 6 | 30 d | scorer → history/profile writers, API live stream |
 | `transactions.dlq` | — | 1 | 30 d | any stage → operators (error + original payload) |
-| `fraud.alerts` | customer_id | 3 | 30 d | scorer → alert-dispatcher, explainer |
+| `fraud.alerts` | customer_id | 3 | 30 d | scorer → alert-handler (investigation, explanation, webhook) |
 
 * **Keying by `customer_id`** preserves per-customer order, which the velocity
   windows need; the keyed pipeline topics share a partition count so a customer
@@ -369,17 +368,39 @@ an offline replay gives the live values.
   risk engine's `graph` signal; the transaction-feature model stays the `ml`
   signal, so each signal can be explained and weighted on its own.
 
-## 7. Explanations (LLM)
+## 7. Alerts, investigations and explanations
 
-* Explanations are generated only for alerts (score ≥ threshold) or on analyst
-  request, never for every event.
-* The pipeline is retrieval → evidence object (facts with their source store)
-  → prompt → structured output (`summary`, `reasons[]`, each reason citing
-  evidence keys). Any reason that doesn't cite existing evidence is dropped.
-* Default provider `template` is deterministic and works offline. LLM providers
-  are opt-in behind the same interface.
-* Data minimisation: identifiers are pseudonymised and raw IPs / balances are
-  not sent to an external LLM.
+```text
+fraud.alerts ─► alert-handler ─► evidence (alert message + MongoDB profile)
+                               ─► explanation: template (default) | Claude (opt-in)
+                               ─► grounding check ─► MongoDB investigations (OPEN)
+                               ─► optional webhook (Slack/Teams/...)
+```
+
+* Explanations are generated only for alerts (score ≥ alert threshold),
+  once per alert: the investigation is created with `$setOnInsert`, so a
+  redelivered alert neither resets an analyst's decision nor pays for a
+  second explanation.
+* **Evidence** (`fraudx.explain.evidence`): flat, citable keys built from the
+  alert itself (it carries every input of the decision: signals and their
+  share of the score, rule hits, transaction and graph features, model
+  versions) and the customer's profile, e.g. `graph.payee_owner_ring_size`,
+  `features.balance_drain_ratio`, `contribution.ml`, `payee.kind`.
+* **Template** (`fraudx.explain.template`, default, offline, deterministic):
+  12 reason rules ordered strongest first (rule hits, graph patterns, then
+  amount, balance, velocity, new device/country/IP, shared device, the
+  strongest model signal); at most five reasons, each citing its keys.
+* **Claude** (`EXPLAIN_PROVIDER=anthropic`, `fraudx.explain.llm`):
+  `claude-opus-5-5`, JSON constrained by a schema (`output_config.format`),
+  effort `low`, server-side refusal fallback (`fallbacks: "default"`). It
+  receives the pseudonymised evidence only: identifiers removed, and the
+  evidence never contains IPs or raw balances. API errors, refusals, or an
+  answer with no grounded reason fall back to the template.
+* **Grounding:** every reason, template or LLM, must cite keys that exist in
+  the evidence, or it is dropped (`dropped_ungrounded` is stored).
+* The API serves the analyst queue (`GET /fraud/investigations`), one case
+  (`GET /fraud/{tx}`), the explanation with each reason's cited values
+  (`GET /fraud/{tx}/explanation`) and the decision (`PATCH /fraud/{tx}`).
 
 ## 8. Security
 

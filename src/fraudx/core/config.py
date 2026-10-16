@@ -130,6 +130,26 @@ class OfflineNeo4jSettings(BaseSettings):
         return Neo4jSettings(uri=self.uri, password=password)
 
 
+class ExplainSettings(BaseSettings):
+    """Explanations for alerts (ADR-009): deterministic template by default.
+
+    ``anthropic`` sends pseudonymised evidence to Claude (needs
+    ``ANTHROPIC_API_KEY``) and falls back to the template on any failure.
+    """
+
+    model_config = SettingsConfigDict(**_ENV, env_prefix="EXPLAIN_")
+
+    provider: Literal["template", "anthropic"] = "template"
+    model: str = "claude-opus-5-5"
+    timeout_s: float = Field(default=30.0, gt=0)
+
+
+class AlertSettings(BaseSettings):
+    model_config = SettingsConfigDict(**_ENV, env_prefix="ALERTS_")
+
+    webhook_url: str | None = None  # POST a JSON summary of each new investigation
+
+
 # --- Risk engine -------------------------------------------------------------
 
 

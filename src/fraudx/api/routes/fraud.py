@@ -1,12 +1,12 @@
-"""Fraud views: the alert feed (Cassandra)."""
+"""Fraud views: the alert feed (Cassandra) and investigations (MongoDB)."""
 
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
-from typing import Annotated
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from fraudx.api.stores import Stores, get_stores
 
@@ -22,6 +22,60 @@ class RiskEvent(BaseModel):
     risk_score: int
     risk_level: str
     rule_hits: list[str] | None = None
+
+
+Status = Literal["OPEN", "CONFIRMED_FRAUD", "FALSE_POSITIVE", "DISMISSED"]
+StoresDep = Annotated[Stores, Depends(get_stores)]
+
+
+class Risk(BaseModel):
+    score: int
+    level: str
+    components: dict[str, float]
+    rule_hits: list[str] = []
+    missing_signals: list[str] = []
+
+
+class ExplanationOut(BaseModel):
+    summary: str
+    reasons: list[str]
+    reason_evidence: list[list[str]] = []
+    generator: str
+    created_at: datetime
+
+
+class InvestigationSummary(BaseModel):
+    transaction_id: str
+    customer_id: str
+    event_time: datetime
+    risk: Risk
+    status: Status
+    explanation: ExplanationOut
+    created_at: datetime
+    updated_at: datetime
+    analyst_note: str | None = None
+
+
+class Investigation(InvestigationSummary):
+    models: dict[str, str] = {}
+    evidence: dict[str, Any]
+
+
+class CitedReason(BaseModel):
+    text: str
+    evidence: dict[str, Any] = Field(description="the cited evidence keys and their values")
+
+
+class ExplanationView(BaseModel):
+    transaction_id: str
+    summary: str
+    generator: str
+    reasons: list[CitedReason]
+
+
+class Decision(BaseModel):
+    status: Status
+    note: str | None = Field(default=None, max_length=2000)
 
 
 class AlertFeed(BaseModel):
@@ -45,3 +99,54 @@ def get_alerts(
     if level:
         events = [e for e in events if e["risk_level"] == level][:limit]
     return {"day": day, "events": events}
+
+
+@router.get("/investigations", response_model=list[InvestigationSummary])
+def list_investigations(
+    stores: StoresDep,
+    status: Status = "OPEN",
+    limit: Annotated[int, Query(ge=1, le=500)] = 50,
+):
+    """The analyst queue: investigations with a status, newest first (MongoDB)."""
+    return stores.investigations().queue(status, limit)
+
+
+def _investigation(stores: Stores, transaction_id: str) -> dict[str, Any]:
+    doc = stores.investigations().get(transaction_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="no investigation for this transaction")
+    return doc
+
+
+@router.get("/{transaction_id}", response_model=Investigation)
+def get_investigation(transaction_id: str, stores: StoresDep):
+    """One investigation: risk breakdown, evidence, explanation and status."""
+    return _investigation(stores, transaction_id)
+
+
+@router.get("/{transaction_id}/explanation", response_model=ExplanationView)
+def get_explanation(transaction_id: str, stores: StoresDep):
+    """The explanation, each reason with the evidence values it cites."""
+    doc = _investigation(stores, transaction_id)
+    explanation, evidence = doc["explanation"], doc["evidence"]
+    reasons = [
+        {"text": text, "evidence": {k: evidence.get(k) for k in keys}}
+        for text, keys in zip(
+            explanation["reasons"], explanation.get("reason_evidence", []), strict=False
+        )
+    ]
+    return {
+        "transaction_id": transaction_id,
+        "summary": explanation["summary"],
+        "generator": explanation["generator"],
+        "reasons": reasons,
+    }
+
+
+@router.patch("/{transaction_id}", response_model=Investigation)
+def decide(transaction_id: str, body: Decision, stores: StoresDep):
+    """Record the analyst's decision (confirmed fraud, false positive, dismissed)."""
+    doc = stores.investigations().decide(transaction_id, body.status, body.note)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="no investigation for this transaction")
+    return doc

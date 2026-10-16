@@ -190,6 +190,12 @@ Grafana `:3000`.
       Offline builds moved to a disposable `redis-offline` service
       (`OnlineFeatureStore(cache_results=False)`); `ml build-features` refuses
       to run without it. Polars added. Tests: 101 unit, 24 integration
+- [x] **Phase 9, investigations + explanations (ADR-009):** alert handler
+      (`python -m fraudx.alerts`, compose `alert-handler`) → MongoDB
+      investigation with evidence + grounded explanation (template default,
+      Claude opt-in) + optional webhook; API `/fraud/investigations`,
+      `/fraud/{tx}`, `/fraud/{tx}/explanation`, `PATCH /fraud/{tx}`.
+      295 investigations on the demo data. Tests: 133 unit, 33 integration
 - [x] **Phase 8, scorer (ADR-030/031):** `scoring.scorer` (`python -m
       fraudx.scoring`, compose `scorer`): calibrated signals + rules → risk
       engine → `transactions.scored` / `fraud.alerts` / Redis latest risk;
@@ -488,7 +494,13 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   architecture image names OpenAI, the README names no provider.
 - **Advantages:** Works offline, testable, swappable provider, auditable.
 - **Trade-offs:** Template explanations read less naturally.
-- **Impact:** `LLM_PROVIDER` env; Phase 9.
+- **Impact:** `EXPLAIN_PROVIDER` env; Phase 9.
+- **Implemented 2026-10-17:** `fraudx.explain` (evidence, template with 12
+  reason rules, `ClaudeExplainer`: `claude-opus-5-5`, schema-constrained JSON,
+  effort low, `fallbacks: "default"`, template fallback on any failure) and
+  `fraudx.alerts` (one investigation per alert via `$setOnInsert`, optional
+  webhook). Evidence keys contain dots; MongoDB 8 stores them inside the
+  `evidence` sub-document (never queried by field).
 
 ### ADR-010: JSON + versioned Pydantic contracts (no Schema Registry yet)
 - **Decision:** JSON payloads validated by `fraudx.core.schemas` with a
@@ -866,11 +878,9 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 1. IBM AML graph features + graph model (build running, ~1.5–2 h): compare
    with the supervised baseline 0.147.
-2. **Phase 9 – alerts → investigations + explanations:** an alert handler on
-   `fraud.alerts` creates the MongoDB investigation (status OPEN) with
-   evidence and an evidence-grounded template explanation (optional LLM);
-   API `/fraud/{tx}`, `/fraud/{tx}/explanation`, analyst status update.
-3. Dashboard (10), Grafana dashboards (11).
+2. **Phase 10 – dashboard**, then Grafana dashboards (11).
+3. Feedback loop (later): a confirmed-fraud decision could set `fraud_flag` in
+   Neo4j and feed a `transactions.labels` topic for retraining.
 
 ## Lessons learned
 

@@ -18,7 +18,7 @@ retrieved from four purpose-built NoSQL stores.
 - Engineering memory (decisions, progress, conventions): [memory.md](memory.md)
 - Original specification: [FraudX_README.md](FraudX_README.md)
 
-> **Status:** Phases 0–8 are complete: replayed transactions flow through Kafka, get online
+> **Status:** Phases 0–9 are complete: replayed transactions flow through Kafka, get online
 > features in Redis, and land in Cassandra, MongoDB and Neo4j, which the API reads back.
 > A versioned LightGBM model, an Isolation Forest anomaly detector and a graph model are
 > trained and registered, on the synthetic data and on PaySim and IBM AML HI-Small (reports in
@@ -27,7 +27,8 @@ retrieved from four purpose-built NoSQL stores.
 > Graph features (Phase 7) feed a third, graph-based model. The scorer (Phase 8) combines
 > the three calibrated signals and two rules into a 0–100 risk score for every transaction
 > and raises alerts (live: precision 0.79, recall 0.88 on the demo data).
-> Next: explanations (Phase 9) and the dashboard (Phase 10).
+> Every alert opens an investigation with an evidence-grounded explanation (Phase 9).
+> Next: the dashboard (Phase 10).
 
 ## Quick start
 
@@ -64,6 +65,9 @@ API endpoints (each one reads the store whose data model fits the query):
 | `GET /customers/{id}/risk` | Redis | latest risk score, set by the scorer in real time |
 | `GET /fraud/alerts?day=&level=&limit=` | Cassandra | MEDIUM/HIGH transactions of a day (8 bucket partitions merged) |
 | `POST /transactions/simulate` | Kafka | inject a transaction into the live pipeline; read it back with `GET /transactions/{id}` |
+| `GET /fraud/investigations?status=` | MongoDB | analyst queue, newest first |
+| `GET /fraud/{tx}` · `/fraud/{tx}/explanation` | MongoDB | case: risk breakdown, evidence, explanation with each reason's cited values |
+| `PATCH /fraud/{tx}` | MongoDB | analyst decision: `CONFIRMED_FRAUD`, `FALSE_POSITIVE`, `DISMISSED` |
 | `GET /health`, `/health/ready`, `/metrics/` | all | liveness, dependency readiness, Prometheus |
 
 ## Development
@@ -119,6 +123,6 @@ fraudx/
 | 6 | Anomaly detection (Isolation Forest, calibrated) | done |
 | 7 | Graph features and graph model | done |
 | 8 | Scorer service, calibrated risk engine, alerts | done |
-| 9 | Evidence-grounded explanations (template / LLM) | |
+| 9 | Investigations with evidence-grounded explanations (template / Claude) | done |
 | 10 | API endpoints and React dashboard | read endpoints done |
 | 11 | Benchmarks and Grafana dashboards | storage benchmarks done |

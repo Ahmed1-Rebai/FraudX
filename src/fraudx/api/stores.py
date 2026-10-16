@@ -21,6 +21,7 @@ from fraudx.core.config import (
 )
 from fraudx.messaging.producer import EventProducer
 from fraudx.storage import clients
+from fraudx.storage.investigations import Investigations
 from fraudx.storage.readers import GraphReader, HistoryReader, ProfileReader, RiskReader
 
 
@@ -38,6 +39,9 @@ class Stores:
 
     def graph(self) -> GraphReader:
         return self._get("graph", self._connect_graph)
+
+    def investigations(self) -> Investigations:
+        return Investigations(self.profiles().db)  # same MongoDB client
 
     def risk(self) -> RiskReader:
         return self._get("risk", self._connect_risk)
