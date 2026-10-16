@@ -248,16 +248,27 @@ exclude `kind = "MERCHANT"` from traversals.
 ## 6. Scoring
 
 ```text
+sᵢ    = calibrationᵢ(detectorᵢ(x))                  P(fraud | score), fitted on validation
 score = round_half_up(100 × Σ wᵢ·sᵢ / Σ wᵢ)   over the available signals i ∈ {ml, anomaly, graph}
-score = max(score, floor of every rule hit)
-level = HIGH if score ≥ 70, MEDIUM if ≥ 30, else LOW         (config/risk.yaml)
+score = max(score, floor of every rule hit)     takeover_pattern → high, burst_on_shared_device → medium
+level = HIGH if score ≥ high, MEDIUM if ≥ medium, else LOW     (config/risk.yaml)
 ```
 
+* Every signal is a **calibrated fraud probability** (isotonic regression on
+  validation, stored with each model, `fraudx.scoring.detectors`). Without
+  calibration the spec's weighted average is worse than the ML model alone
+  (test PR-AUC 0.717 vs 0.747): the anomaly percentile (≈ 0.5 on normal
+  traffic) drowns the other signals.
 * Weights and thresholds come from `config/risk.yaml`, validated at load
-  (weights sum to 1, thresholds ordered).
+  (weights sum to 1, thresholds ordered), and are **chosen on validation** by
+  `make tune-risk` (ADR-030): ml 0.5, anomaly 0.1, graph 0.4; MEDIUM ≥ 8
+  (best F2, review queue), HIGH = alert ≥ 23 (best F1). Evidence:
+  `docs/experiments/2026-10-16-risk-engine.md` (test PR-AUC 0.851 vs 0.747 for
+  ML alone; holdout alert precision 0.79, recall 0.88).
 * A missing signal (model not loaded, graph timeout) has its weight
   redistributed and is listed in `missing_signals`. It is never counted as 0.
-* Deterministic rules (blocklists, impossible travel, …) set a minimum score.
+* Deterministic rules (`fraudx.scoring.rules`) set a minimum level; only
+  rules with ≥ 0.85 precision on training and holdout data are kept.
 * ML training is offline (`ml` scripts → `models/` + `model_registry`); the
   scorer only loads a registered, versioned artifact.
 * Evaluation uses precision, recall, F1, ROC-AUC and **PR-AUC (primary)** with a

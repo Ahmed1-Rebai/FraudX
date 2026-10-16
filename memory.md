@@ -569,6 +569,31 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 - **Impact:** `fraudx.ml`; the scorer (Phase 8) loads the active registry
   version with `FraudModel`.
 
+### ADR-030: Risk engine: calibrated signals, weights and thresholds tuned on validation
+- **Decision:** Keep the spec's weighted average (ADR-008), but (a) every
+  signal is a calibrated fraud probability (isotonic regression on
+  validation, stored in each model's metadata), (b) weights are chosen by a
+  grid search (0.1 steps) on validation PR-AUC, ties to 0.4/0.3/0.3, (c)
+  HIGH/alert = best-F1 score, MEDIUM = best-F2 score on validation, (d) two
+  rules with ≥ 0.85 precision set floors (`takeover_pattern` → HIGH,
+  `burst_on_shared_device` → MEDIUM). `make tune-risk` writes
+  `config/risk.yaml` and a report.
+- **Reason:** Measured on the synthetic test split: the spec's 0.4/0.3/0.3
+  on raw scores gives PR-AUC 0.717, *below* ML alone (0.747), because the
+  anomaly percentile is ≈ 0.5 on normal traffic and drowns the others.
+  Calibrated: 0.838; tuned: **0.851**; a learned stacking model 0.876 on test
+  but equal on the holdout (0.931 vs 0.932), so the interpretable,
+  configurable formula is kept.
+- **Result:** weights ml 0.5 / anomaly 0.1 / graph 0.4; MEDIUM ≥ 8, HIGH ≥ 23.
+  Alerts: test precision 0.74 / recall 0.76; holdout 0.79 / 0.88 (alert rate
+  0.2–0.45 %). Without graph: test 0.768; without anomaly 0.847 (it adds little).
+- **Trade-offs:** Weights and thresholds are tied to the model versions:
+  re-tune after retraining. Calibration uses the validation split that also
+  chose early stopping and the model's threshold. Thresholds look low (23)
+  because the score is a probability-weighted average: 23 ≈ 23 % fraud odds.
+- **Impact:** `ml/calibration.py`, `scoring/{detectors,rules,tuning}.py`,
+  `config/risk.yaml`, CLI `tune-risk`, ARCHITECTURE §6.
+
 ### ADR-029: Graph features: point-in-time Neo4j query, offline replay, separate graph model
 - **Decision:** Six graph features per transaction (`payee_payer_count`,
   `payee_payee_count`, `payer_payee_count`, `is_new_payee`,

@@ -28,6 +28,7 @@ import sklearn
 from sklearn.ensemble import IsolationForest
 
 from fraudx.core.schemas import FEATURE_VERSION, TransactionEvent, TransactionFeatures
+from fraudx.ml import calibration
 from fraudx.ml.dataset import FeatureMatrix
 from fraudx.ml.train import evaluate, time_split
 from fraudx.ml.vectorize import CATEGORICAL, FEATURE_NAMES, vectorize
@@ -120,9 +121,10 @@ def train(
         return percentile(raw_scores(forest, filled[idx]), reference)
 
     prevalence = float(y.mean())
+    valid_scores = scores(split.valid)
     metrics: dict[str, Any] = {
         "split": {k: len(getattr(split, k)) for k in ("train", "valid", "test")},
-        "valid": evaluate(y[split.valid], scores(split.valid), THRESHOLD,
+        "valid": evaluate(y[split.valid], valid_scores, THRESHOLD,
                           reference_prevalence=prevalence),
         "test": evaluate(y[split.test], scores(split.test), THRESHOLD,
                          data.scenario[split.test], prevalence),
@@ -141,6 +143,7 @@ def train(
         "feature_version": FEATURE_VERSION,
         "feature_names": list(FEATURES),
         "threshold": THRESHOLD,
+        "calibration": calibration.fit(valid_scores, y[split.valid]),
         "params": {**PARAMS, "trained_on": "legitimate rows of the training split",
                    "legit_train_rows": len(legit_train)},
         "metrics": metrics,

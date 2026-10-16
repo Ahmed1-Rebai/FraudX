@@ -3,7 +3,7 @@
 COMPOSE := docker compose
 INFRA := kafka kafka-init mongodb cassandra cassandra-init redis neo4j neo4j-init
 
-.PHONY: data data-train features train offline-redis offline-neo4j download-datasets paysim ibm-aml bench replay tail help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
+.PHONY: data data-train features train tune-risk offline-redis offline-neo4j download-datasets paysim ibm-aml bench replay tail help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -52,6 +52,10 @@ train: offline-redis offline-neo4j ## Train + evaluate the fraud, anomaly and gr
 	uv run python -m fraudx.ml train --dataset data/training/synthetic --holdout data/generated --activate $(ARGS)
 	uv run python -m fraudx.ml train-anomaly --dataset data/training/synthetic --holdout data/generated --activate
 	uv run python -m fraudx.ml train --graph --dataset data/training/synthetic --holdout data/generated --activate
+	$(MAKE) tune-risk
+
+tune-risk: ## Tune risk weights/thresholds on validation with the active models -> config/risk.yaml + report
+	set -a && . ./.env && set +a && uv run python -m fraudx.ml tune-risk --dataset data/training/synthetic --holdout data/generated --write-config
 
 download-datasets: ## Download PaySim + IBM AML HI-Small from Kaggle (token in ~/.kaggle/access_token)
 	uvx kaggle datasets download ealaxi/paysim1 -p data/raw/paysim --unzip

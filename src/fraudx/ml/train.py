@@ -35,6 +35,7 @@ from sklearn.metrics import (
 )
 
 from fraudx.core.schemas import FEATURE_VERSION
+from fraudx.ml import calibration
 from fraudx.ml.dataset import FeatureMatrix
 from fraudx.ml.vectorize import CATEGORICAL, FEATURE_GROUPS
 
@@ -162,6 +163,7 @@ class TrainingResult:
     params: dict[str, Any]
     threshold: float
     metrics: dict[str, Any]
+    calibration: dict[str, list[float]] = field(default_factory=dict)
     candidates: list[dict[str, Any]] = field(default_factory=list)
     ablations: dict[str, dict[str, float]] = field(default_factory=dict)
     importance: list[tuple[str, float]] = field(default_factory=list)
@@ -188,7 +190,8 @@ def train(data: FeatureMatrix, holdout: FeatureMatrix | None = None) -> Training
     assert best is not None
     _, booster, params = best
 
-    threshold = best_f1_threshold(y[split.valid], booster.predict(X[split.valid]))
+    valid_p = booster.predict(X[split.valid])
+    threshold = best_f1_threshold(y[split.valid], valid_p)
     reference = float(y.mean())  # the dataset's fraud rate
     metrics = {
         "split": {k: len(getattr(split, k)) for k in ("train", "valid", "test")},
@@ -224,7 +227,10 @@ def train(data: FeatureMatrix, holdout: FeatureMatrix | None = None) -> Training
         ((n, round(float(g) / total, 4)) for n, g in zip(names, gains, strict=True)),
         key=lambda item: -item[1],
     )
-    return TrainingResult(booster, params, threshold, metrics, candidates, ablations, importance)
+    return TrainingResult(
+        booster, params, threshold, metrics, calibration.fit(valid_p, y[split.valid]),
+        candidates, ablations, importance,
+    )  # fmt: skip
 
 
 def save(
@@ -248,6 +254,7 @@ def save(
         "feature_version": feature_version,
         "feature_names": list(result.booster.feature_name()),
         "threshold": round(result.threshold, 6),
+        "calibration": result.calibration,
         "params": result.params,
         "best_iteration": result.booster.best_iteration,
         "metrics": result.metrics,

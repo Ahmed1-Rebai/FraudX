@@ -9,9 +9,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_shipped_risk_config_is_valid():
+    """The shipped values come from `make tune-risk`; check what must always hold."""
     config = RiskConfig.from_yaml(REPO_ROOT / "config" / "risk.yaml")
-    assert config.weights.ml == pytest.approx(0.40)
-    assert config.thresholds.high == 70
+    w = config.weights
+    assert w.ml + w.anomaly + w.graph == pytest.approx(1.0)
+    assert config.thresholds.medium < config.thresholds.high == config.alert_threshold
 
 
 def _config(**overrides):

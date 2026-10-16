@@ -7,6 +7,8 @@ python -m fraudx.ml train --dataset data/training/synthetic [--holdout data/gene
 python -m fraudx.ml train-anomaly --dataset data/training/synthetic [--holdout data/generated]
                                   [--register] [--activate]
 python -m fraudx.ml register models/<name>/<version> [--activate]
+python -m fraudx.ml tune-risk --dataset data/training/synthetic --holdout data/generated
+                              [--write-config]   (uses the active models)
 """
 
 from __future__ import annotations
@@ -132,6 +134,31 @@ def _train_anomaly(args: argparse.Namespace) -> int:
     return 0
 
 
+def _tune_risk(args: argparse.Namespace) -> int:
+    from fraudx.scoring import tuning
+    from fraudx.scoring.detectors import load_active
+
+    settings = MongoSettings()
+    client = mongo_client(settings)
+    try:
+        detectors = load_active(client[settings.db])
+    finally:
+        client.close()
+    if not detectors:
+        log.error("no active models in the registry; run `make train` first")
+        return 2
+    result = tuning.tune(args.dataset, detectors, args.holdout)
+    report_path = args.reports_dir / f"{result['tuned_at'][:10]}-risk-engine.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(tuning.render(result), encoding="utf-8")
+    log.info("weights %s, thresholds %s; report %s", result["weights"], result["thresholds"],
+             report_path)  # fmt: skip
+    if args.write_config:
+        args.config.write_text(tuning.config_yaml(result, report_path), encoding="utf-8")
+        log.info("wrote %s", args.config)
+    return 0
+
+
 def _register(args: argparse.Namespace) -> int:
     path = args.artifact / "metadata.json"
     if not path.exists():
@@ -188,6 +215,14 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--register", action="store_true", help="record in MongoDB model_registry")
     a.add_argument("--activate", action="store_true", help="register and mark as active")
     a.set_defaults(func=_train_anomaly)
+
+    k = sub.add_parser("tune-risk", help="tune and evaluate the risk engine on the active models")
+    k.add_argument("--dataset", type=Path, default=Path("data/training/synthetic"))
+    k.add_argument("--holdout", type=Path, help="dataset dir evaluated out-of-sample")
+    k.add_argument("--reports-dir", type=Path, default=Path("docs/experiments"))
+    k.add_argument("--config", type=Path, default=Path("config/risk.yaml"))
+    k.add_argument("--write-config", action="store_true", help="write the tuned config file")
+    k.set_defaults(func=_tune_risk)
 
     r = sub.add_parser("register", help="record a saved model in MongoDB model_registry")
     r.add_argument("artifact", type=Path, help="model directory: models/<name>/<version>")
