@@ -11,20 +11,20 @@
     "to": "now"
   },
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "editable": true,
   "panels": [
     {
       "type": "row",
       "title": "Pipeline health",
       "collapsed": false,
+      "panels": [],
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 0
       },
-      "panels": [],
       "id": 1
     },
     {
@@ -86,8 +86,8 @@
     },
     {
       "type": "stat",
-      "title": "Alerts (1 h)",
-      "description": "Transactions at or above the alert threshold.",
+      "title": "Alert rate (1 h)",
+      "description": "Fraud detection rate: share of scored transactions that raised an alert.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -104,7 +104,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(fraudx_alerts_total[1h]))",
+          "expr": "sum(increase(fraudx_alerts_total[1h])) / sum(increase(fraudx_scored_total[1h]))",
           "legendFormat": "",
           "refId": "A"
         }
@@ -121,9 +121,9 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "percentunit",
           "noValue": "0",
-          "decimals": 0,
+          "decimals": 2,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -491,19 +491,19 @@
       "type": "row",
       "title": "Latency",
       "collapsed": false,
+      "panels": [],
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 13
       },
-      "panels": [],
       "id": 10
     },
     {
       "type": "timeseries",
       "title": "Stage latency p95 (produce \u2192 processed)",
-      "description": "Time from a message being produced to its topic until the stage has processed it.",
+      "description": "Time from a message being produced to its topic until the stage processed it.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -553,8 +553,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Handler time p95 per message",
-      "description": "Processing cost per message (batch time divided by batch size).",
+      "title": "Scorer time per transaction by stage",
+      "description": "Model inference latency: graph features and known fraud (Neo4j), the three models + rules + risk engine, publishing.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -564,6 +564,135 @@
         "w": 12,
         "x": 12,
         "y": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (stage) (rate(fraudx_scorer_stage_seconds_sum[5m])) / scalar(sum(rate(fraudx_scored_total[5m])))",
+          "legendFormat": "{{stage}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "id": 12
+    },
+    {
+      "type": "timeseries",
+      "title": "Store write time p95 per message",
+      "description": "Each writer's time per message is dominated by its store's batched write.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(fraudx_consumer_processing_seconds_bucket{worker=\"feature-processor\"}[5m])))",
+          "legendFormat": "Redis (feature-processor)",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(fraudx_consumer_processing_seconds_bucket{worker=\"graph-writer\"}[5m])))",
+          "legendFormat": "Neo4j (graph-writer)",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(fraudx_consumer_processing_seconds_bucket{worker=\"history-writer\"}[5m])))",
+          "legendFormat": "Cassandra (history-writer)",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(fraudx_consumer_processing_seconds_bucket{worker=\"profile-writer\"}[5m])))",
+          "legendFormat": "MongoDB (profile-writer)",
+          "refId": "D"
+        }
+      ],
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "id": 13
+    },
+    {
+      "type": "timeseries",
+      "title": "Handler time p95 per message",
+      "description": "Processing cost per message for every worker (batch time / batch size).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
       },
       "targets": [
         {
@@ -600,20 +729,20 @@
         },
         "overrides": []
       },
-      "id": 12
+      "id": 14
     },
     {
       "type": "row",
       "title": "Risk",
       "collapsed": false,
+      "panels": [],
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 22
+        "y": 30
       },
-      "panels": [],
-      "id": 13
+      "id": 15
     },
     {
       "type": "timeseries",
@@ -627,7 +756,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 23
+        "y": 31
       },
       "targets": [
         {
@@ -710,12 +839,12 @@
           }
         ]
       },
-      "id": 14
+      "id": 16
     },
     {
       "type": "timeseries",
       "title": "Rule hits per minute",
-      "description": "Deterministic rules that set a minimum level.",
+      "description": "Deterministic rules, including the analyst-feedback rule payee_confirmed_fraud.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -724,7 +853,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 23
+        "y": 31
       },
       "targets": [
         {
@@ -762,7 +891,7 @@
         },
         "overrides": []
       },
-      "id": 15
+      "id": 17
     },
     {
       "type": "timeseries",
@@ -776,7 +905,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 23
+        "y": 31
       },
       "targets": [
         {
@@ -813,20 +942,20 @@
         },
         "overrides": []
       },
-      "id": 16
+      "id": 18
     },
     {
       "type": "row",
       "title": "API and Kafka",
       "collapsed": false,
+      "panels": [],
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 31
+        "y": 39
       },
-      "panels": [],
-      "id": 17
+      "id": 19
     },
     {
       "type": "timeseries",
@@ -840,7 +969,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 32
+        "y": 40
       },
       "targets": [
         {
@@ -877,7 +1006,7 @@
         },
         "overrides": []
       },
-      "id": 18
+      "id": 20
     },
     {
       "type": "timeseries",
@@ -891,7 +1020,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 32
+        "y": 40
       },
       "targets": [
         {
@@ -928,7 +1057,7 @@
         },
         "overrides": []
       },
-      "id": 19
+      "id": 21
     },
     {
       "type": "timeseries",
@@ -942,7 +1071,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 32
+        "y": 40
       },
       "targets": [
         {
@@ -980,7 +1109,7 @@
         },
         "overrides": []
       },
-      "id": 20
+      "id": 22
     }
   ]
 }
