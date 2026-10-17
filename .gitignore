@@ -35,3 +35,4 @@ logs/
 # Frontend (Phase 10)
 node_modules/
 frontend/dist/
+*.tsbuildinfo
