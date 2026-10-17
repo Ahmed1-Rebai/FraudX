@@ -100,6 +100,10 @@ class FakePrometheus:
     def by_label(self, promql, label):
         if not self.up:
             raise OSError("connection refused")
+        if label == "worker":
+            return {"scorer": 12.5, "feature-processor": 12.6}
+        if label == "group":
+            return {"fraudx-scorer": 40.0}
         return {"LOW": 900.0, "MEDIUM": 70.0, "HIGH": 30.0}
 
     def scalar(self, promql):
@@ -107,6 +111,9 @@ class FakePrometheus:
 
     def series(self, promql, start, end, step):
         return [(1.0, 3.0), (31.0, 4.0)]
+
+    def series_by_label(self, promql, label, start, end, step):
+        return {"HIGH": [(60.0, 2.0)], "MEDIUM": [(60.0, 5.0)]}
 
 
 class FakeKafkaMessage:
@@ -303,6 +310,17 @@ def test_overview_kpis_and_analyst_precision():
     assert (body["alerts"], body["avg_risk_score"], body["transactions_per_s"]) == (30.0, 12.5, 4.2)
     assert body["confirmed_precision"] == 0.75 and len(body["throughput"]) == 2
     assert degraded["metrics_available"] is False and degraded["investigations"]["OPEN"] == 5
+    assert body["thresholds"] == {"MEDIUM": 8, "HIGH": 23} and body["alert_threshold"] == 23
+    assert [a["level"] for a in body["alerts_series"]] == ["HIGH", "MEDIUM"]
+    stages = {st["worker"]: st for st in body["stages"]}
+    assert next(iter(stages)) == "feature-processor" and len(stages) == 6  # pipeline order
+    assert (stages["scorer"]["messages_per_s"], stages["scorer"]["lag"]) == (12.5, 40.0)
+
+
+def test_investigation_counts():
+    client, _ = _client()
+    with client:
+        assert client.get("/fraud/investigations/counts").json()["CONFIRMED_FRAUD"] == 3
 
 
 def test_live_stream_sends_compact_scored_events_and_closes_its_consumer():

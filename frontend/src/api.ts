@@ -2,6 +2,19 @@
 
 export type Level = "LOW" | "MEDIUM" | "HIGH";
 export type Status = "OPEN" | "CONFIRMED_FRAUD" | "FALSE_POSITIVE" | "DISMISSED";
+export const STATUSES: Status[] = ["OPEN", "CONFIRMED_FRAUD", "FALSE_POSITIVE", "DISMISSED"];
+
+export interface Point {
+  t: number;
+  value: number;
+}
+
+export interface Stage {
+  worker: string;
+  messages_per_s: number | null;
+  lag: number | null;
+  latency_p95_s: number | null;
+}
 
 export interface Overview {
   window: string;
@@ -10,10 +23,19 @@ export interface Overview {
   alerts: number | null;
   transactions_per_s: number | null;
   avg_risk_score: number | null;
-  throughput: { t: number; value: number }[];
+  throughput: Point[];
+  alerts_series: { level: Level; points: Point[] }[];
+  stages: Stage[];
   investigations: Partial<Record<Status, number>>;
   confirmed_precision: number | null;
+  thresholds: Partial<Record<Level, number>>;
+  alert_threshold: number | null;
   metrics_available: boolean;
+}
+
+export interface Readiness {
+  status: "ready" | "degraded";
+  dependencies: Record<string, { ok: boolean; latency_ms: number; detail: string }>;
 }
 
 export interface LiveEvent {
@@ -71,6 +93,12 @@ export interface Explanation {
   created_at: string;
 }
 
+export interface Feedback {
+  account: string;
+  flagged: boolean;
+  confirmations: number;
+}
+
 export interface Investigation {
   transaction_id: string;
   customer_id: string;
@@ -87,6 +115,7 @@ export interface Investigation {
   created_at: string;
   updated_at: string;
   analyst_note: string | null;
+  feedback?: Feedback | null;
   models?: Record<string, string>;
   evidence?: Record<string, unknown>;
 }
@@ -111,6 +140,7 @@ export interface Counterparty {
   account: string;
   counterparty: string;
   kind: string | null;
+  confirmed_fraud: boolean;
   direction: "in" | "out";
   count: number;
   total_amount: number;
@@ -150,7 +180,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "content-type": "application/json", ...init?.headers },
   });
   if (!resp.ok) {
-    let detail = resp.statusText;
+    let detail: unknown = resp.statusText;
     try {
       detail = (await resp.json()).detail ?? detail;
     } catch {
@@ -168,10 +198,16 @@ const q = (params: Record<string, string | number | undefined>) =>
 
 export const api = {
   overview: () => request<Overview>("/stats/overview"),
+  readiness: async (): Promise<Readiness> => {
+    // 503 while degraded still carries the per-dependency body
+    const resp = await fetch("/api/health/ready");
+    return (await resp.json()) as Readiness;
+  },
   alerts: (day: string, level?: Level) =>
-    request<{ day: string; events: RiskEvent[] }>(`/fraud/alerts?${q({ day, level, limit: 200 })}`),
+    request<{ day: string; events: RiskEvent[] }>(`/fraud/alerts?${q({ day, level, limit: 300 })}`),
+  counts: () => request<Partial<Record<Status, number>>>("/fraud/investigations/counts"),
   investigations: (status: Status) =>
-    request<Investigation[]>(`/fraud/investigations?${q({ status, limit: 200 })}`),
+    request<Investigation[]>(`/fraud/investigations?${q({ status, limit: 300 })}`),
   investigation: (tx: string) => request<Investigation>(`/fraud/${encodeURIComponent(tx)}`),
   explanation: (tx: string) =>
     request<ExplanationView>(`/fraud/${encodeURIComponent(tx)}/explanation`),
@@ -197,21 +233,3 @@ export function subscribeScored(
   source.onmessage = (msg) => onEvent(JSON.parse(msg.data) as LiveEvent);
   return () => source.close();
 }
-
-export const fmt = {
-  int: (n: number | null | undefined) => (n == null ? "–" : Math.round(n).toLocaleString("en")),
-  compact: (n: number | null | undefined) =>
-    n == null
-      ? "–"
-      : new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(n),
-  money: (n: number, currency: string) =>
-    `${n.toLocaleString("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`,
-  pct: (n: number | null | undefined, digits = 0) =>
-    n == null ? "–" : `${(n * 100).toFixed(digits)}%`,
-  time: (iso: string) =>
-    new Date(iso).toLocaleString("en-GB", {
-      dateStyle: "short",
-      timeStyle: "medium",
-      timeZone: "UTC",
-    }),
-};

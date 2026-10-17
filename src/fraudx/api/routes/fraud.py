@@ -110,6 +110,12 @@ def get_alerts(
     return {"day": day, "events": events}
 
 
+@router.get("/investigations/counts", response_model=dict[str, int])
+def investigation_counts(stores: StoresDep):
+    """Number of investigations per status (MongoDB aggregation)."""
+    return stores.investigations().counts()
+
+
 @router.get("/investigations", response_model=list[InvestigationSummary])
 def list_investigations(
     stores: StoresDep,

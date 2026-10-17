@@ -9,6 +9,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    proxy: { "/api": { target: api, changeOrigin: true, rewrite: (p) => p.replace(/^\/api/, "") } },
+    proxy: {
+      "/api": { target: api, changeOrigin: true, rewrite: (p) => p.replace(/^\/api/, "") },
+      "/openapi.json": { target: api, changeOrigin: true },
+    },
   },
 });

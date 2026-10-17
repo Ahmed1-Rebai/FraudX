@@ -28,7 +28,8 @@ retrieved from four purpose-built NoSQL stores.
 > the three calibrated signals and two rules into a 0–100 risk score for every transaction
 > and raises alerts (live: precision 0.79, recall 0.88 on the demo data).
 > Every alert opens an investigation with an evidence-grounded explanation (Phase 9).
-> The React dashboard (Phase 10) shows KPIs, the live stream, investigations and the graph.
+> The React dashboard (Phase 10) shows KPIs and pipeline health, the live stream, the analyst
+> case workflow (decisions feed back into the graph) and a graph explorer, in light and dark themes.
 > Grafana shows the pipeline (throughput, lag, latency, risk) and the benchmarks measure it:
 > a decision takes about 107 ms at p50 end to end, and one host sustains about 1,650 tx/s
 > ([`docs/benchmarks/`](docs/benchmarks/streaming.md)).
@@ -70,11 +71,12 @@ API endpoints (each one reads the store whose data model fits the query):
 | `GET /fraud/alerts?day=&level=&limit=` | Cassandra | MEDIUM/HIGH transactions of a day (8 bucket partitions merged) |
 | `POST /transactions/simulate` | Kafka | inject a transaction into the live pipeline; read it back with `GET /transactions/{id}` |
 | `GET /fraud/investigations?status=` | MongoDB | analyst queue, newest first |
+| `GET /fraud/investigations/counts` | MongoDB | number of cases per status (one aggregation) |
 | `GET /fraud/{tx}` · `/fraud/{tx}/explanation` | MongoDB | case: risk breakdown, evidence, explanation with each reason's cited values |
 | `PATCH /fraud/{tx}` | MongoDB + Neo4j | analyst decision; confirming fraud marks the payee account in the graph (known-fraud rule) |
 | `POST /models/predict` | models | the live scorer's decision and explanation for one transaction, no side effects |
 | `GET /stream/scored` | Kafka | live scored transactions (Server-Sent Events) |
-| `GET /stats/overview` | Prometheus + MongoDB | dashboard KPIs (last 24 h) and analyst-confirmed precision |
+| `GET /stats/overview` | Prometheus + MongoDB | dashboard KPIs (last 24 h), per-worker pipeline health, risk thresholds, analyst-confirmed precision |
 | `GET /health`, `/health/ready`, `/metrics/` | all | liveness, dependency readiness, Prometheus |
 
 ## Development

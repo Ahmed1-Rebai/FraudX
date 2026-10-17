@@ -29,6 +29,15 @@ class Prometheus:
         return {r["metric"].get(label, ""): float(r["value"][1])
                 for r in self._get("/api/v1/query", query=promql)}  # fmt: skip
 
+    def series_by_label(
+        self, promql: str, label: str, start: float, end: float, step_s: int
+    ) -> dict[str, list[tuple[float, float]]]:
+        result = self._get("/api/v1/query_range", query=promql, start=start, end=end, step=step_s)
+        return {
+            r["metric"].get(label, ""): [(float(t), float(v)) for t, v in r["values"]]
+            for r in result
+        }
+
     def series(
         self, promql: str, start: float, end: float, step_s: int
     ) -> list[tuple[float, float]]:

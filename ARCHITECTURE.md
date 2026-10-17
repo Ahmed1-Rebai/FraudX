@@ -546,17 +546,22 @@ stay empty; nothing is invented. See [docs/data/README.md](docs/data/README.md).
 ## 13. Dashboard (`frontend/`)
 
 React + TypeScript built with Vite; nginx serves it and proxies `/api` to the
-API (same origin, no CORS; buffering off for the SSE stream). Pages follow the
-spec:
+API (same origin, no CORS; buffering off for the SSE stream) and
+`/openapi.json` (for the API reference at `/api/docs`). A sidebar shell holds
+four pages, each showing the readiness of the five backends
+(`GET /health/ready`):
 
 | Page | Data |
 |---|---|
-| Overview | KPIs from `GET /stats/overview`: scored, tx/s and its 30-min sparkline, levels, average score (Prometheus, last 24 h); confirmed fraud and **analyst-confirmed precision** (MongoDB decisions: the live stream carries no labels, ADR-019); the day's alert feed (Cassandra) |
-| Live stream | `GET /stream/scored` (SSE): each viewer reads `transactions.scored` from its end with a throw-away consumer group, so viewers never affect the pipeline |
-| Investigations | queue (MongoDB), case in the spec's order: transaction → risk score → ML / anomaly / graph signals → graph relationships → explanation with each reason's cited evidence → analyst decision |
-| Graph | a customer's devices, the customers sharing them, and money counterparties (Neo4j), with the device and counterparty tables |
+| Overview | KPIs from `GET /stats/overview`: transactions scored with a throughput sparkline, alerts, open cases, **analyst-confirmed precision** (MongoDB decisions: the live stream carries no labels, ADR-019); throughput over 30 min; risk-level shares with the configured thresholds; MEDIUM/HIGH per minute over the last hour; per-worker throughput, consumer lag and p95 latency (Prometheus); the day's alert feed (Cassandra) |
+| Live stream | `GET /stream/scored` (SSE): each viewer reads `transactions.scored` from its end with a throw-away consumer group, so viewers never affect the pipeline; arrival rate, level filter, search, pause |
+| Investigations | status tabs with counts (`GET /fraud/investigations/counts`), the queue (MongoDB) and the case: score, rules, the explanation with each reason's cited evidence, the signals and their share of the score, the transaction, behaviour and graph evidence, and the decision bar. A decision shows what it changed in the graph (the payee's confirmation mark, ADR-033) |
+| Graph explorer | a customer's devices, the customers sharing them, and money counterparties (Neo4j), confirmed-fraud accounts ringed; the customers alerted today are one click away |
 
-Charts follow one method: risk levels use the fixed status palette with an
-icon and a label (never color alone); node kinds use three categorical slots
+Charts follow one method: time charts span a fixed window (a gap in the
+metrics stays a gap); risk levels use the fixed status palette with an icon
+and a label (never color alone); node kinds use three categorical slots
 validated for color-vision deficiency in both themes; light and dark are
-separate token sets, with a manual override.
+separate token sets, with a manual override. Below 1100 px the layout is one
+column (an open case replaces the queue); below 860 px the sidebar becomes an
+icon bar.

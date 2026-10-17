@@ -368,7 +368,11 @@ services:
 
   # React dashboard (nginx): http://localhost:${DASHBOARD_PORT:-8090}; proxies /api to the API.
   dashboard:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # the sidebar's Grafana link follows the configured host port
+        VITE_GRAFANA_URL: http://localhost:${GRAFANA_PORT:-3000}/d/fraudx-pipeline
     image: fraudx-dashboard:latest
     ports:
       - "127.0.0.1:${DASHBOARD_PORT:-8090}:80"

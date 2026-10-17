@@ -3,7 +3,7 @@
 Persistent project memory. **Read this first** when resuming work; update it
 at the end of every work session (progress, issues, decisions, next tasks).
 
-Last updated: 2026-10-16 (review fixes; PaySim + IBM AML benchmarks trained; synthetic model retrained on 24 features and active; see "Review 2026-10-16" in Known issues)
+Last updated: 2026-10-17 (dashboard redesign, ADR-034; network endpoint now returns `confirmed_fraud`; chart time windows fixed)
 
 ---
 
@@ -250,6 +250,15 @@ Grafana `:3000`.
       trained:** PaySim (test 0.982, matched 0.957), IBM AML (0.147, the
       graph-detector baseline); synthetic demo model retrained on 24 features
       and active
+- [x] **Dashboard redesign (2026-10-17, ADR-034):** sidebar shell and design
+      tokens (light/dark), KPI tiles, fixed-window charts, pipeline health per
+      worker, case view with cited evidence and decision feedback, graph
+      explorer, phone layout. API: `GET /fraud/investigations/counts`;
+      `/stats/overview` adds `alerts_series`, `stages`, `thresholds`.
+      Fixes: `/customers/{id}/network` dropped `confirmed_fraud` (response
+      model); `/api/docs` had no schema behind nginx. Verified by screenshots
+      (light, dark, 390 px) and a confirm → reopen round trip in the UI.
+      Tests: 152 unit, 34 integration
 
 ## Current progress
 
@@ -367,6 +376,9 @@ model scores on synthetic data. PaySim is the harder benchmark.
 * Card-testing bursts can run a few minutes past the configured end date.
   This is harmless.
 * ~~`kafka-ui` had no healthcheck~~ **Fixed 2026-10-17** (`/actuator/health`).
+* CI (`.github/workflows/ci.yml`: lint, unit tests, dashboard build) is
+  written but not in the repository: the push token lacks GitHub's
+  `workflow` scope. Add the scope, then commit the file (and a README badge).
 
 **Review 2026-10-16 (open findings, measured):**
 
@@ -385,9 +397,9 @@ model scores on synthetic data. PaySim is the harder benchmark.
   2026-10-16:** `python -m fraudx.ml register <artifact>` records a model from
   its `metadata.json`; the 2026-10-14 entry was re-registered with it (correct
   UTC time, threshold, 24 features) and the script deleted.
-* The risk engine's alert threshold (70) ignores the model's own threshold
-  (PaySim 0.49, from validation). With ML alone, alerts need p ≥ 0.70. Map or
-  calibrate signals in Phase 8.
+* ~~The risk engine's alert threshold (70) ignores the model's own
+  threshold.~~ **Fixed 2026-10-16 (ADR-030):** signals are calibrated
+  probabilities and the thresholds (MEDIUM 8, HIGH 23) are tuned on validation.
 * ~~The NoSQL stores are write-only.~~ **Fixed 2026-10-16:** read endpoints
   (`storage.readers` → API) and `make bench` (see ADR-027).
 * Cassandra TWCS tables have no `default_time_to_live`, so TWCS can't drop
@@ -609,6 +621,32 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   467 MB (numpy, scikit-learn, LightGBM, libgomp).
 - **Impact:** `fraudx.ml`; the scorer (Phase 8) loads the active registry
   version with `FraudModel`.
+
+### ADR-034: Dashboard redesign: design tokens, fixed time windows, a case workflow
+- **Decision:** A sidebar shell with one design system (`styles.css`: tokens
+  per theme, cards, tables, status pills) replaces the first-pass pages.
+  Runtime additions to React: `lucide-react` (icons, tree-shaken) and the
+  Inter variable font self-hosted by `@fontsource` (no CDN). Charts stay
+  hand-written SVG; time charts draw on a fixed window (now − 30 min / 1 h),
+  never on the data's own extent. The investigations page is a queue (status
+  tabs with counts) and a case view; decisions answer with a toast and the
+  graph change they caused. The API adds what the pages need and nothing
+  more: case counts, MEDIUM/HIGH per minute, per-worker stage health and the
+  configured thresholds.
+- **Reason:** The first pages showed the data but not the workflow an analyst
+  follows (queue → evidence → decision → effect), and the overview hid the
+  pipeline's health that Grafana already measured.
+- **Advantages:** One look at a case gives the score, the cited reasons, the
+  signals' shares, the behaviour and graph facts and the decision; pipeline
+  stalls show per worker (lag, p95) on the overview; light/dark/phone layouts
+  come from the same tokens.
+- **Trade-offs:** Two more runtime dependencies (215 kB JS, 66 kB gzip; the
+  font loads per Unicode range). Stage health needs Prometheus, like the
+  other KPIs (`metrics_available: false` otherwise).
+- **Impact:** `frontend/src/{styles.css,components/,lib/,pages/}`,
+  `api/routes/{stats,fraud,customers}.py`, `api/prometheus.py`,
+  `frontend/nginx.conf`, compose `dashboard` build argument
+  (`VITE_GRAFANA_URL` follows `GRAFANA_PORT`).
 
 ### ADR-033: Analyst feedback loop: confirmations in the graph, a measured MEDIUM rule
 - **Decision:** `PATCH /fraud/{tx}` records the decision in Neo4j: a
@@ -954,10 +992,25 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 2. Possible next steps: a learned combiner for laundering-type data (on IBM
    AML stacking beats the weighted engine, 0.253 vs 0.197); multi-hop graph
    features (cycles, scatter-gather); scale-out runs (`--scale scorer=6`).
-3. Feedback loop (later): a confirmed-fraud decision could set `fraud_flag` in
-   Neo4j and feed a `transactions.labels` topic for retraining.
+3. Feedback loop, second half: decisions already mark accounts in Neo4j
+   (ADR-033); publish them to a `transactions.labels` topic for retraining.
+4. Push the CI workflow once the token has the `workflow` scope (Known issues).
 
 ## Lessons learned
+
+* Never chain an edit after a probe (`grep … && python3 - <<EOF`): when the
+  probe matched nothing, the edit was skipped and the tests that followed
+  passed on the unchanged code. Run edits on their own and check they landed.
+* FastAPI's `response_model` drops fields it doesn't declare: the graph
+  reader returned `confirmed_fraud`, but the network endpoint never sent it.
+  Test a field at the API boundary, not only in the reader.
+* Place time-series marks on the time window, not on the data's extent or
+  array index: a 6-minute burst filled a "last 30 minutes" chart, and axis
+  labels between columns resolved to index −1.
+* A grid's implicit `auto` column grows to its widest child's min-content (a
+  tab bar that can't wrap) and clips everything on a phone. Page containers
+  use `grid-template-columns: minmax(0, 1fr)`; wide content scrolls in its
+  own box.
 
 * Inserting a **non-frozen** Cassandra collection writes a tombstone first
   (to replace the old value). Use `frozen<...>` for values written whole, and

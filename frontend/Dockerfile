@@ -5,6 +5,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY tsconfig.json vite.config.ts index.html ./
 COPY src ./src
+ARG VITE_GRAFANA_URL
+ENV VITE_GRAFANA_URL=$VITE_GRAFANA_URL
 RUN npm run build
 
 FROM nginx:1.27-alpine
