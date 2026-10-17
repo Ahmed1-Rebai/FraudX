@@ -56,7 +56,7 @@ Without make: `cp .env.example .env && docker compose up -d --wait`.
 | http://localhost:9090 | Prometheus |
 | http://localhost:3000 | Grafana (dashboard *FraudX pipeline*) |
 
-If port 8000 is busy, set `API_PORT` in `.env`.
+Every host port is set in `.env` (`API_PORT`, `MONGO_PORT`, `KAFKA_PORT`, …): change one there when it is taken, e.g. `MONGO_PORT=27018` next to a local MongoDB.
 
 API endpoints (each one reads the store whose data model fits the query):
 

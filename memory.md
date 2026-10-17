@@ -329,16 +329,17 @@ model scores on synthetic data. PaySim is the harder benchmark.
 * Single-node everything: RF=1, no HA. Intended for local development.
 * First `docker compose up` takes ~8 min (image pulls); later starts take ~1–2
   min, mostly Cassandra.
-* Host port 8000 is taken on the main dev machine, so its `.env` sets
-  `API_PORT=8001`.
+* Host ports are configurable in `.env` (every `*_PORT`). On the main dev
+  machine port 8000 is taken (`API_PORT=8001`) and a system `mongod` service
+  listens on 27017 (`MONGO_PORT=27018`, since 2026-10-17).
 * `customers.country` is the first country seen, so a customer whose first
   transaction happened abroad gets the wrong home country (e.g. `C-000663`
   → AE). The stream has no KYC data. Fix by sourcing home country from
   customer master data, or deriving it as the modal country from Cassandra
   in a batch job.
-* The 2,000 rebased test events (same ids, new times) appear twice in
-  `transactions_by_customer` and advanced Neo4j edge counters. This is an
-  artifact of re-sending the same dataset; `make clean && make up` resets it.
+* ~~Rebased re-sends duplicated rows~~ **Fixed 2026-10-17:** `replay
+  --rebase-time` now prefixes ids (`R<UTC timestamp>-`) by default, so a
+  re-send is a new set of transactions (`--id-prefix ""` keeps the ids).
 * A MongoDB validation failure inside a bulk write is treated as transient,
   so a schema bug would stall the profile writer (visible as lag) rather
   than dead-letter. Map write errors back to messages if this becomes a
@@ -357,8 +358,7 @@ model scores on synthetic data. PaySim is the harder benchmark.
   (ground_truth.csv).
 * Card-testing bursts can run a few minutes past the configured end date.
   This is harmless.
-* `kafka-ui` has no healthcheck defined yet (dev tool only, not a dependency
-  of any service).
+* ~~`kafka-ui` had no healthcheck~~ **Fixed 2026-10-17** (`/actuator/health`).
 
 **Review 2026-10-16 (open findings, measured):**
 

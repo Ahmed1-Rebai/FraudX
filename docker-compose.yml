@@ -3,7 +3,9 @@
 #   make env && docker compose up -d     # whole stack
 #   docker compose ps                    # every service reports (healthy)
 #
-# All ports bind to 127.0.0.1 only. Secrets come from .env (see .env.example);
+# All ports bind to 127.0.0.1 only; every host port can be changed in .env
+# (e.g. MONGO_PORT=27018 when another MongoDB already uses 27017).
+# Secrets come from .env (see .env.example);
 # required variables fail fast with a clear message if missing.
 # *-init services are one-shot provisioning jobs (topics, schemas) and exit 0.
 
@@ -49,7 +51,7 @@ services:
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,EXTERNAL://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,EXTERNAL://localhost:${KAFKA_PORT:-9092}
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
@@ -63,7 +65,7 @@ services:
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       KAFKA_HEAP_OPTS: -Xms512m -Xmx1g
     ports:
-      - "127.0.0.1:9092:9092"
+      - "127.0.0.1:${KAFKA_PORT:-9092}:9092"
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
@@ -93,7 +95,13 @@ services:
       KAFKA_CLUSTERS_0_NAME: fraudx
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${KAFKA_UI_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/actuator/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     depends_on:
       kafka:
         condition: service_healthy
@@ -109,7 +117,7 @@ services:
       MONGO_APP_USER: ${MONGO_APP_USER:-fraudx_app}
       MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?set MONGO_APP_PASSWORD in .env}
     ports:
-      - "127.0.0.1:27017:27017"
+      - "127.0.0.1:${MONGO_PORT:-27017}:27017"
     volumes:
       - mongo-data:/data/db
       - ./infra/mongodb/init.js:/docker-entrypoint-initdb.d/10-init.js:ro
@@ -130,7 +138,7 @@ services:
       MAX_HEAP_SIZE: 1G
       HEAP_NEWSIZE: 256M
     ports:
-      - "127.0.0.1:9042:9042"
+      - "127.0.0.1:${CASSANDRA_PORT:-9042}:9042"
     volumes:
       - cassandra-data:/var/lib/cassandra
     healthcheck:
@@ -159,7 +167,7 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
       REDISCLI_AUTH: ${REDIS_PASSWORD}
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -181,7 +189,7 @@ services:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
       REDISCLI_AUTH: ${REDIS_PASSWORD}
     ports:
-      - "127.0.0.1:6380:6379"
+      - "127.0.0.1:${REDIS_OFFLINE_PORT:-6380}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -197,8 +205,8 @@ services:
       NEO4J_server_memory_heap_max__size: 1g
       NEO4J_server_memory_pagecache_size: 512m
     ports:
-      - "127.0.0.1:7474:7474"   # browser
-      - "127.0.0.1:7687:7687"   # bolt
+      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474"   # browser
+      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687"   # bolt
     volumes:
       - neo4j-data:/data
     healthcheck:
@@ -233,7 +241,7 @@ services:
       NEO4J_server_memory_heap_max__size: 2g
       NEO4J_server_memory_pagecache_size: 1g
     ports:
-      - "127.0.0.1:7688:7687"
+      - "127.0.0.1:${NEO4J_OFFLINE_BOLT_PORT:-7688}:7687"
     tmpfs:
       - /data
     healthcheck:
@@ -375,7 +383,7 @@ services:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
     ports:
-      - "127.0.0.1:9090:9090"
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
       interval: 10s
@@ -394,7 +402,7 @@ services:
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
     depends_on:
       prometheus:
         condition: service_healthy
