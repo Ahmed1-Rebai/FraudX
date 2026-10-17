@@ -50,7 +50,10 @@ class FakeReader:
     def customer_network(self, customer_id, limit):
         if customer_id != "C-1":
             return None
-        return {"customer_id": "C-1", "devices": [], "counterparties": []}
+        flow = {"account": "A-1", "counterparty": "A-9", "kind": "CUSTOMER",
+                "confirmed_fraud": True, "direction": "out", "count": 2,
+                "total_amount": 900.0, "last_seen": T}  # fmt: skip
+        return {"customer_id": "C-1", "devices": [], "counterparties": [flow]}
 
 
 INVESTIGATION = {
@@ -226,6 +229,8 @@ def test_unknown_customer_and_invalid_limit():
     with client:
         assert client.get("/customers/C-404").status_code == 404
         assert client.get("/customers/C-404/network").status_code == 404
+        # the analyst's confirmation mark reaches the dashboard
+        assert client.get("/customers/C-1/network").json()["counterparties"][0]["confirmed_fraud"]
         assert client.get("/customers/C-1/transactions?limit=0").status_code == 422
         assert client.get("/customers/C-1").json()["devices"] == ["D-1"]
 

@@ -58,6 +58,7 @@ class Counterparty(BaseModel):
     account: str
     counterparty: str
     kind: str | None = None
+    confirmed_fraud: bool = False
     direction: str
     count: int
     total_amount: float
