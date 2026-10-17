@@ -418,9 +418,22 @@ fraud.alerts ─► alert-handler ─► evidence (alert message + MongoDB profi
 * Every service exposes Prometheus metrics; the API has
   `fraudx_http_requests_total` and `fraudx_http_request_duration_seconds`,
   labelled by route template.
-* Pipeline metrics (to be added per phase): events/s per stage, processing
-  latency, end-to-end latency (`now − event_time`), DLQ count, model inference
-  latency, Kafka consumer lag (kafka-exporter).
+* Pipeline metrics from every worker (`fraudx.messaging.consumer`): messages
+  by outcome (ok / dlq / retry), handler time, stage latency (produce →
+  processed), consumer lag per partition (from librdkafka statistics, no
+  kafka-exporter). The scorer adds scores by level, the score distribution,
+  alerts, rule hits and missing signals; the alert handler counts
+  investigations and webhook failures.
+* **Grafana** dashboard *FraudX pipeline*, provisioned from
+  `infra/grafana/provisioning/dashboards/`: pipeline health (throughput,
+  lag, dead-lettered, degraded scoring), latency (p95 per stage and per
+  message), risk (medium/high per minute in the status colors, rule hits,
+  investigations) and API / Kafka panels. `make up` reloads Prometheus.
+* **Measured** (`make bench-stream`, `docs/benchmarks/streaming.md`):
+  end-to-end latency from `transactions.raw` to a scored decision, and the
+  pipeline's sustained throughput on one host. Batch workers wait at most
+  50 ms for a batch to fill; the earlier 1 s wait put the steady-state p50
+  at 1.3 s.
 * JSON logs on stdout with contextual fields.
 * `/health` is liveness (no dependencies); `/health/ready` checks all five
   backends and the presence of the Kafka topics.
@@ -430,7 +443,7 @@ fraud.alerts ─► alert-handler ─► evidence (alert message + MongoDB profi
 | Concern | Local | Scale-out |
 |---|---|---|
 | Kafka | 1 broker, 6 partitions | 3+ brokers, RF=3; up to 6 consumers per group without re-partitioning |
-| Stream processing | 1 feature-processor, batched (≈5.7k events/s measured on the same code path offline; ≈2k/s before batching) | `--scale feature-processor=6`; state lives in Redis, so workers are stateless |
+| Stream processing | one replica per worker; the whole pipeline (features, graph query, three models) sustains about 1k tx/s on one host (`make bench-stream`) | `--scale feature-processor=6 --scale scorer=6`; state lives in Redis and Neo4j, so workers are stateless |
 | Redis | single node | Redis Cluster (keys are already hash-tagged per customer) |
 | Cassandra | 1 node, RF=1 | multi-node, NetworkTopologyStrategy RF=3 |
 | MongoDB | standalone | replica set, then shard `investigations` by `customer_id` if needed |

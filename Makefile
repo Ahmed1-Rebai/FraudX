@@ -3,7 +3,7 @@
 COMPOSE := docker compose
 INFRA := kafka kafka-init mongodb cassandra cassandra-init redis neo4j neo4j-init
 
-.PHONY: web web-build data data-train features train tune-risk offline-redis offline-neo4j download-datasets paysim ibm-aml bench replay tail help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
+.PHONY: bench-stream web web-build data data-train features train tune-risk offline-redis offline-neo4j download-datasets paysim ibm-aml bench replay tail help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -86,6 +86,9 @@ web: ## Dashboard dev server on :5173 with hot reload (proxies /api to the API o
 
 web-build: ## Type-check and build the dashboard (frontend/dist)
 	cd frontend && npm ci --no-audit --no-fund && npm run build
+
+bench-stream: ## Streaming benchmark on the running stack (end-to-end latency, throughput) -> docs/benchmarks/streaming.md
+	set -a && . ./.env && set +a && uv run python -m fraudx.bench_stream $(ARGS)
 
 replay: ## Publish data/generated to transactions.raw (ARGS="--rate 500 --rebase-time")
 	uv run python -m fraudx.ingestion replay $(ARGS)

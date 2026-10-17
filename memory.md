@@ -190,6 +190,12 @@ Grafana `:3000`.
       Offline builds moved to a disposable `redis-offline` service
       (`OnlineFeatureStore(cache_results=False)`); `ml build-features` refuses
       to run without it. Polars added. Tests: 101 unit, 24 integration
+- [x] **Phase 11, observability + streaming benchmark:** Grafana dashboard
+      *FraudX pipeline* provisioned (20 panels: health, latency, risk,
+      API/Kafka); `python -m fraudx.bench_stream` / `make bench-stream`:
+      steady 200 tx/s → p50 107 ms, p95 162 ms, p99 487 ms end to end; burst
+      of 20k → 1,659 tx/s sustained (`docs/benchmarks/streaming.md`). Found and
+      fixed: batch workers waited up to 1 s per batch (p50 was 1.3 s)
 - [x] **Phase 10, dashboard (ADR-032):** `frontend/` React + TypeScript
       (Vite), nginx image `dashboard` (:8090, `/api` proxy, SSE-safe); pages
       overview (KPIs via `GET /stats/overview`), live stream (`GET
@@ -904,8 +910,9 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 1. IBM AML graph features + graph model (build running, ~1.5–2 h): compare
    with the supervised baseline 0.147.
-2. **Phase 11 – Grafana dashboards** (pipeline throughput, latency, lag,
-   scores, alerts, store writers) and the streaming benchmark.
+2. Possible next steps: a learned combiner for laundering-type data (on IBM
+   AML stacking beats the weighted engine, 0.253 vs 0.197); multi-hop graph
+   features (cycles, scatter-gather); scale-out runs (`--scale scorer=6`).
 3. Feedback loop (later): a confirmed-fraud decision could set `fraud_flag` in
    Neo4j and feed a `transactions.labels` topic for retraining.
 
@@ -916,6 +923,9 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   bind empty collections as UNSET.
 * `git stash -u` during a long background job removes files a *new* process
   of that job may import; verify a commit in a separate `git worktree`.
+* `consume(n, timeout)` blocks until n messages **or** the timeout: a 1 s
+  timeout added up to a second per batch stage at low traffic. Measure end
+  to end (`make bench-stream`) before trusting per-stage numbers.
 * Prometheus reads a bind-mounted config only at start; `docker compose up`
   doesn't restart it when the file changes (the scorer was unscraped for a
   while). `make up` now sends SIGHUP to reload it.

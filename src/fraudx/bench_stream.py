@@ -1,0 +1,180 @@
+"""Streaming benchmark (spec Phase 11): events/s and end-to-end latency of the live pipeline.
+
+python -m fraudx.bench_stream [--dataset data/generated] [--steady 3000 --rate 200]
+                              [--burst 20000]
+
+Transactions from a dataset get fresh ids (``BENCH-<run>-``), times rebased
+to now, and are published to ``transactions.raw``. A consumer watches
+``transactions.scored`` for those ids. End-to-end latency is the scored
+message's Kafka timestamp minus the moment its raw event was sent, i.e.
+validation + online features (Redis) + graph features (Neo4j) + three models
++ risk engine, across two Kafka hops. Two runs:
+
+* **steady**: a paced load the pipeline keeps up with (real-time latency);
+* **burst**: everything at once (peak throughput; latency then includes queueing).
+
+The benchmark transactions are processed like real ones and stay in the
+stores of the stack it runs against: use a demo stack (``make clean`` resets).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import platform
+import sys
+import time
+import uuid
+from datetime import UTC, datetime
+from itertools import islice
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+from confluent_kafka import Consumer
+
+from fraudx.core.config import KafkaSettings
+from fraudx.core.logging import configure_logging
+from fraudx.core.topics import TRANSACTIONS_RAW, TRANSACTIONS_SCORED
+from fraudx.ingestion.dataset import EVENTS_FILE, read_events
+from fraudx.ingestion.replay import Pacer, prepare
+from fraudx.messaging.producer import EventProducer
+
+log = logging.getLogger("fraudx.bench_stream")
+
+
+def _watcher(settings: KafkaSettings) -> Consumer:
+    consumer = Consumer({
+        "bootstrap.servers": settings.bootstrap_servers,
+        "group.id": f"fraudx-bench-{uuid.uuid4().hex[:8]}",
+        "enable.auto.commit": False,
+        "auto.offset.reset": "latest",
+    })  # fmt: skip
+    consumer.subscribe([TRANSACTIONS_SCORED])
+    deadline = time.monotonic() + 30
+    while not consumer.assignment() and time.monotonic() < deadline:
+        consumer.poll(0.5)  # join the group before sending, so nothing is missed
+    if not consumer.assignment():
+        raise RuntimeError("could not join a consumer group on transactions.scored")
+    return consumer
+
+
+def run(dataset: Path, count: int, rate: float, timeout_s: float = 600) -> dict[str, Any]:
+    settings = KafkaSettings()
+    prefix = f"BENCH-{uuid.uuid4().hex[:6]}-"
+    events = list(prepare(islice(read_events(dataset / EVENTS_FILE), count),
+                          rebase_time=True, id_prefix=prefix))  # fmt: skip
+    consumer = _watcher(settings)
+    producer = EventProducer(settings, "bench-stream")
+    sent_at: dict[str, float] = {}
+    pacer = Pacer(rate)
+    started = time.time()
+    for event in events:
+        pacer.wait()
+        producer.send_model(TRANSACTIONS_RAW, event, key=event.partition_key)
+        sent_at[event.transaction_id] = time.time()
+    producer.flush()
+    sending_s = time.time() - started
+
+    latencies: dict[str, float] = {}
+    last_scored = started
+    deadline = time.monotonic() + timeout_s
+    try:
+        while len(latencies) < len(events) and time.monotonic() < deadline:
+            for message in consumer.consume(1000, 1.0):
+                if message.error() or not message.value():
+                    continue
+                tx = json.loads(message.value())["event"]["transaction_id"]
+                if tx in sent_at and tx not in latencies:
+                    scored_ts = message.timestamp()[1] / 1000
+                    latencies[tx] = max(scored_ts - sent_at[tx], 0.0)
+                    last_scored = max(last_scored, scored_ts)
+    finally:
+        consumer.close()
+    ms = np.array(list(latencies.values())) * 1000
+    elapsed = last_scored - started
+    return {
+        "events": len(events),
+        "scored": len(latencies),
+        "target_rate": rate or None,
+        "send_rate": round(len(events) / sending_s),
+        "throughput": round(len(latencies) / elapsed) if elapsed > 0 else None,
+        "latency_ms": {
+            q: round(float(np.percentile(ms, p)), 1)
+            for q, p in (("p50", 50), ("p95", 95), ("p99", 99), ("max", 100))
+        } if len(ms) else {},
+    }  # fmt: skip
+
+
+def render(results: dict[str, dict[str, Any]], meta: dict[str, Any]) -> str:
+    def row(cells: list[Any]) -> str:
+        return "| " + " | ".join(str(c) for c in cells) + " |"
+
+    lines = [
+        "# Streaming benchmark",
+        "",
+        f"- Run: {meta['run_at']}; dataset `{meta['dataset']}`; host {meta['cpus']} CPUs, "
+        f"{meta['platform']}; every service and store on one Docker host, one replica per worker.",
+        "- End-to-end = sent to `transactions.raw` → scored message on `transactions.scored`: "
+        "validation, online features (Redis), graph features (Neo4j), three models, risk "
+        "engine and two Kafka hops. Generated by `python -m fraudx.bench_stream` "
+        "(`make bench-stream`).",
+        "",
+        row(["run", "events", "scored", "send rate (tx/s)", "pipeline throughput (tx/s)",
+             "latency p50 (ms)", "p95", "p99", "max"]),
+        row(["---"] * 9),
+    ]  # fmt: skip
+    for name, r in results.items():
+        lat = r["latency_ms"]
+        label = f"{name} ({r['target_rate']:.0f} tx/s)" if r["target_rate"] else f"{name} (unpaced)"
+        lines.append(row([label, f"{r['events']:,}", f"{r['scored']:,}", f"{r['send_rate']:,}",
+                          f"{r['throughput']:,}", lat.get("p50"), lat.get("p95"), lat.get("p99"),
+                          lat.get("max")]))  # fmt: skip
+    lines += [
+        "",
+        "Steady latency is the real-time cost of a decision. Burst latency includes the time "
+        "spent queued behind earlier events, so it grows with the burst size; the burst's "
+        "throughput is the pipeline's sustained capacity on this host (scale workers up to "
+        "the 6 partitions to raise it).",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    configure_logging("INFO", "text")
+    parser = argparse.ArgumentParser(
+        prog="python -m fraudx.bench_stream",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--dataset", type=Path, default=Path("data/generated"))
+    parser.add_argument("--steady", type=int, default=3_000, help="events in the paced run")
+    parser.add_argument("--rate", type=float, default=200.0, help="events/s in the paced run")
+    parser.add_argument("--burst", type=int, default=20_000, help="events in the unpaced run")
+    parser.add_argument("--out", type=Path, default=Path("docs/benchmarks/streaming.md"))
+    args = parser.parse_args(argv)
+
+    results = {}
+    log.info("steady run: %d events at %.0f/s", args.steady, args.rate)
+    results["steady"] = run(args.dataset, args.steady, args.rate)
+    log.info("steady: %s", results["steady"])
+    log.info("burst run: %d events unpaced", args.burst)
+    results["burst"] = run(args.dataset, args.burst, 0.0)
+    log.info("burst: %s", results["burst"])
+    meta = {
+        "run_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "dataset": str(args.dataset),
+        "cpus": os.cpu_count(),
+        "platform": platform.platform(terse=True),
+    }
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    args.out.write_text(render(results, meta), encoding="utf-8")
+    log.info("wrote %s", args.out)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
