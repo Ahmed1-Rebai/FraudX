@@ -19,7 +19,9 @@ Error policy:
 
 Batch mode (``batch_handler`` + ``batch_size``) serves store writers: the
 handler receives up to ``batch_size`` messages, writes them together and
-returns the messages it rejects as permanent (→ DLQ). Raising any exception
+returns the messages it rejects as permanent (→ DLQ). A batch waits at most
+``batch_wait_s`` (50 ms) to fill: under load batches fill at once from the
+local queue, and at low traffic a message never waits for others. Raising any exception
 rewinds every partition in the batch and retries the whole batch, so batch
 writes must be idempotent.
 """
@@ -133,12 +135,14 @@ class StreamWorker:
         clock: Callable[[], float] = time.monotonic,
         batch_handler: BatchHandler | None = None,
         batch_size: int = 500,
+        batch_wait_s: float = 0.05,
     ) -> None:
         if (handler is None) == (batch_handler is None):
             raise ValueError("provide exactly one of handler / batch_handler")
         self.name = name
         self.batch_handler = batch_handler
         self.batch_size = batch_size
+        self.batch_wait_s = batch_wait_s
         self.topics = topics
         self.group_id = group_id or f"fraudx-{name}"
         self.handler = handler
@@ -182,7 +186,7 @@ class StreamWorker:
         try:
             while not self._stop.is_set():
                 if self.batch_handler is not None:
-                    batch = self._consumer.consume(self.batch_size, 1.0)
+                    batch = self._consumer.consume(self.batch_size, self.batch_wait_s)
                     self._heartbeat()
                     usable = [m for m in batch if self._usable(m)]
                     if usable:

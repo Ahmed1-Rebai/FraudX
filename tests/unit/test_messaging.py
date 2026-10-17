@@ -243,3 +243,36 @@ def test_heartbeat_freshness(tmp_path):
     assert not is_fresh(beat, 30)
     beat.touch()
     assert is_fresh(beat, 30)
+
+
+def test_batch_mode_waits_briefly_for_a_batch_to_fill():
+    """A long consume timeout made every batch stage add up to 1 s of latency at low traffic."""
+
+    class OneBatchConsumer(FakeConsumer):
+        def __init__(self, worker_ref):
+            super().__init__()
+            self.timeouts, self.worker_ref = [], worker_ref
+
+        def subscribe(self, topics, on_revoke=None):
+            pass
+
+        def consume(self, n, timeout):
+            self.timeouts.append(timeout)
+            self.worker_ref[0].stop()
+            return [FakeMessage(b"x", partition=0, offset=7)]
+
+        def close(self):
+            pass
+
+    ref = []
+    batches = []
+    consumer = OneBatchConsumer(ref)
+    worker = StreamWorker(
+        "test", ["t"], None, KafkaSettings(),
+        EventProducer(KafkaSettings(), "test", producer=FakeKafkaProducer()),
+        consumer=consumer, batch_handler=lambda msgs: batches.append(len(msgs)) or [],
+    )  # fmt: skip
+    ref.append(worker)
+    worker.run()
+    assert consumer.timeouts == [0.05] and batches == [1]
+    assert consumer.commits == [{("t", 0): 8}]  # committed on shutdown
