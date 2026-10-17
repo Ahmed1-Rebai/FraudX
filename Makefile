@@ -82,7 +82,7 @@ bench: ## Storage benchmarks (MongoDB vs Cassandra, MongoDB vs Redis) -> docs/be
 	set -a && . ./.env && set +a && uv run python -m fraudx.bench $(ARGS)
 
 web: ## Dashboard dev server on :5173 with hot reload (proxies /api to the API on API_PORT)
-	cd frontend && npm install --no-audit --no-fund && FRAUDX_API=http://localhost:$${API_PORT:-8000} npm run dev
+	set -a && . ./.env && set +a && cd frontend && npm install --no-audit --no-fund && FRAUDX_API=http://localhost:$${API_PORT:-8000} npm run dev
 
 web-build: ## Type-check and build the dashboard (frontend/dist)
 	cd frontend && npm ci --no-audit --no-fund && npm run build

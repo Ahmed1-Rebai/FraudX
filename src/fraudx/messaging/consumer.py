@@ -28,6 +28,7 @@ writes must be idempotent.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import signal
@@ -360,6 +361,9 @@ class StreamWorker:
             log.exception("commit on revoke failed", extra={"worker": self.name})
         revoked = {(p.topic, p.partition) for p in partitions}
         self._attempts = {k: v for k, v in self._attempts.items() if k[:2] not in revoked}
+        for topic, partition in revoked:  # another member owns them now: stop reporting lag
+            with contextlib.suppress(KeyError):  # never reported by this member
+                LAG.remove(self.group_id, topic, str(partition))
 
     # --- observability -------------------------------------------------------------
 

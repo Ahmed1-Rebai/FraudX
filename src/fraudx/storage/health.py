@@ -73,6 +73,7 @@ class DependencyProbe:
             ok = True
         except TimeoutError:
             ok, detail = False, f"timed out after {self._timeout_s}s"
+            self._drop_client(name)  # reconnect on the next check rather than reuse a hung client
         except Exception as exc:
             ok, detail = False, f"{type(exc).__name__}: {exc}"
             self._drop_client(name)

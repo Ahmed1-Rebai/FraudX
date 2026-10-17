@@ -13,6 +13,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 
 from fraudx.api.stores import Stores, get_stores
 from fraudx.core.schemas import ScoredTransaction
@@ -56,7 +57,10 @@ async def stream_scored(
                 messages = await asyncio.to_thread(consumer.consume, 200, 1.0)
                 batch = [m for m in messages if m.error() is None and m.value()]
                 for message in batch:
-                    scored = ScoredTransaction.model_validate_json(message.value())
+                    try:
+                        scored = ScoredTransaction.model_validate_json(message.value())
+                    except ValidationError:
+                        continue  # one unreadable message must not end the viewer's stream
                     yield f"data: {json.dumps(compact(scored))}\n\n"
                     sent += 1
                     if limit is not None and sent >= limit:

@@ -6,6 +6,7 @@ store is still down; a failed connection is retried on the next request.
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from collections.abc import Callable
@@ -28,6 +29,8 @@ from fraudx.messaging.producer import EventProducer
 from fraudx.storage import clients
 from fraudx.storage.investigations import Investigations
 from fraudx.storage.readers import GraphReader, HistoryReader, ProfileReader, RiskReader
+
+log = logging.getLogger(__name__)
 
 
 class Stores:
@@ -73,7 +76,10 @@ class Stores:
     def close(self) -> None:
         with self._lock:
             for close in reversed(self._closers):
-                close()
+                try:  # e.g. the producer can't flush while Kafka is down
+                    close()
+                except Exception:
+                    log.warning("error while closing a store client", exc_info=True)
             self._closers.clear()
             self._readers.clear()
 

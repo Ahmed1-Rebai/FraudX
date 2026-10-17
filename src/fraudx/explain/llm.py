@@ -88,11 +88,20 @@ class ClaudeExplainer:
                         extra={"stop_reason": response.stop_reason})  # fmt: skip
             return template_explain(evidence)
         text = next((b.text for b in response.content if b.type == "text"), "")
-        data = json.loads(text)  # the schema guarantees valid JSON
-        reasons = [Reason(r["text"], tuple(r["evidence"])) for r in data["reasons"]]
+        try:  # the schema should guarantee this shape; never let a bad answer stall alerts
+            data = json.loads(text)
+            summary = str(data["summary"])
+            reasons = [
+                Reason(str(r["text"]), tuple(str(k) for k in r["evidence"]))
+                for r in data["reasons"]
+            ]
+        except (ValueError, KeyError, TypeError) as exc:
+            log.warning("LLM explanation unreadable; using the template",
+                        extra={"error": f"{type(exc).__name__}: {exc}"})  # fmt: skip
+            return template_explain(evidence)
         kept, dropped = grounded(reasons, evidence)
         if not kept:
             log.warning("LLM explanation had no grounded reason; using the template")
             return template_explain(evidence)
-        return Explanation(data["summary"], tuple(kept[:5]), f"llm:anthropic/{response.model}",
+        return Explanation(summary, tuple(kept[:5]), f"llm:anthropic/{response.model}",
                            dropped)  # fmt: skip

@@ -1,11 +1,14 @@
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from confluent_kafka import TopicPartition
+from prometheus_client import REGISTRY
 
 from fraudx.core.config import KafkaSettings
 from fraudx.core.schemas import TransactionEvent
+from fraudx.ingestion.__main__ import default_id_prefix
 from fraudx.ingestion.replay import Pacer, prepare, replay
-from fraudx.messaging.consumer import PermanentError, StreamWorker, decode, lag_from_stats
+from fraudx.messaging.consumer import LAG, PermanentError, StreamWorker, decode, lag_from_stats
 from fraudx.messaging.heartbeat import is_fresh
 from fraudx.messaging.producer import DeliveryError, EventProducer
 
@@ -135,7 +138,6 @@ def test_transient_error_rewinds_and_does_not_commit():
 
 
 def test_commit_only_revoked_partitions_on_rebalance():
-    from confluent_kafka import TopicPartition
 
     worker, consumer, _ = _worker(lambda m: None)
     worker.process(FakeMessage(b"x", partition=0, offset=1))
@@ -276,3 +278,17 @@ def test_batch_mode_waits_briefly_for_a_batch_to_fill():
     worker.run()
     assert consumer.timeouts == [0.05] and batches == [1]
     assert consumer.commits == [{("t", 0): 8}]  # committed on shutdown
+
+
+def test_revoked_partitions_stop_reporting_lag():
+    worker, _, _ = _worker(lambda m: None)
+    LAG.labels(worker.group_id, "t", "3").set(42)
+    worker._on_revoke(None, [TopicPartition("t", 3)])
+    labels = {"group": worker.group_id, "topic": "t", "partition": "3"}
+    assert REGISTRY.get_sample_value("fraudx_consumer_lag", labels) is None
+
+
+def test_a_rebased_replay_gets_fresh_ids_by_default():
+    assert default_id_prefix(rebase_time=False) == ""
+    now = datetime(2026, 10, 17, 9, 30, 5, tzinfo=UTC)
+    assert default_id_prefix(rebase_time=True, now=now) == "R20261017093005-"

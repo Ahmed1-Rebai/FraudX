@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from prometheus_client import make_asgi_app
 
 from fraudx import __version__
+from fraudx.api import errors
 from fraudx.api.metrics import MetricsMiddleware
 from fraudx.api.routes import customers, fraud, health, stats, stream, transactions
 from fraudx.api.stores import Stores
@@ -59,6 +60,7 @@ def create_app(probe: DependencyProbe | None = None, stores: Stores | None = Non
 
     app = FastAPI(title="FraudX API", version=__version__, lifespan=lifespan)
     app.add_middleware(MetricsMiddleware)
+    errors.install(app)
     app.include_router(health.router)
     app.include_router(transactions.router)
     app.include_router(customers.router)

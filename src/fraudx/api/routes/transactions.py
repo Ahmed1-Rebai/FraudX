@@ -8,11 +8,13 @@ from decimal import Decimal
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from fraudx.api.stores import Stores, get_stores
 from fraudx.core.schemas import Location, TransactionEvent, TransactionType
 from fraudx.core.topics import TRANSACTIONS_RAW
+from fraudx.messaging.consumer import PermanentError
+from fraudx.streaming.processor import validate
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
 
@@ -74,11 +76,20 @@ def simulate(body: SimulatedTransaction, stores: Annotated[Stores, Depends(get_s
 
     Read the outcome a moment later with ``GET /transactions/{id}``.
     """
-    event = TransactionEvent(
-        transaction_id=f"SIM-{uuid.uuid4().hex[:12]}",
-        event_time=datetime.now(UTC),
-        **body.model_dump(exclude_none=True),
-    )
+    try:  # the event contract and the pipeline's own business rules, before publishing
+        event = TransactionEvent(
+            transaction_id=f"SIM-{uuid.uuid4().hex[:12]}",
+            event_time=datetime.now(UTC),
+            **body.model_dump(exclude_none=True),
+        )
+        validate(event)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=exc.errors(include_url=False, include_input=False, include_context=False),
+        ) from exc
+    except PermanentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     producer = stores.producer()
     producer.send_model(TRANSACTIONS_RAW, event, key=event.partition_key)
     producer.flush(5)

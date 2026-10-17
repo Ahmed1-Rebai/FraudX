@@ -5,6 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from fraudx.core.schemas import SCHEMA_VERSION, TransactionEvent, TransactionType
+from fraudx.storage.history_writer import to_values
 
 SPEC_EXAMPLE = {
     "transaction_id": "TX-100023",
@@ -55,3 +56,15 @@ def test_invalid_events_rejected(field, value):
 def test_location_country_must_be_iso2():
     with pytest.raises(ValidationError):
         TransactionEvent.model_validate({**SPEC_EXAMPLE, "location": {"country": "Tunisia"}})
+
+
+def test_event_time_is_normalised_to_utc():
+    """A producer's offset must not change the hour feature or the day partition."""
+    event = TransactionEvent.model_validate({
+        "transaction_id": "TX-1", "event_time": "2026-03-01T00:30:00+01:00",
+        "customer_id": "C-1", "source_account": "A-1", "destination_account": "M-1",
+        "amount": 10, "transaction_type": "PAYMENT",
+    })  # fmt: skip
+    assert event.event_time.utcoffset().total_seconds() == 0
+    assert (event.event_time.hour, event.event_time.day) == (23, 28)
+    assert str(to_values(event)["event_date"]) == "2026-02-28"

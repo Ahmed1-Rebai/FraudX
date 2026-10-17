@@ -8,7 +8,7 @@ anything else requires a new version and a migration note in ``memory.md``.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from enum import StrEnum
 from ipaddress import IPv4Address, IPv6Address
@@ -27,6 +27,10 @@ Money = Annotated[
     AfterValidator(lambda v: v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)),
     PlainSerializer(float, return_type=float, when_used="json"),
 ]
+# Timestamps are normalised to UTC on validation, so every consumer (window
+# features, hour of day, Cassandra day partitions) sees the same instant
+# whatever offset the producer used.
+UtcDatetime = Annotated[AwareDatetime, AfterValidator(lambda v: v.astimezone(UTC))]
 # An amount in its original currency, without rounding (e.g. 0.000084 BTC).
 ExactAmount = Annotated[
     Decimal,
@@ -95,7 +99,7 @@ class TransactionEvent(_Contract):
 
     schema_version: int = SCHEMA_VERSION
     transaction_id: str = Field(min_length=1, max_length=64)
-    event_time: AwareDatetime = Field(description="When the transaction happened (event time)")
+    event_time: UtcDatetime = Field(description="When the transaction happened (event time)")
     customer_id: str = Field(min_length=1, max_length=64)
     source_account: str = Field(min_length=1, max_length=64)
     destination_account: str = Field(min_length=1, max_length=64)
@@ -163,7 +167,7 @@ class FeaturedTransaction(_Contract):
     feature_version: int = FEATURE_VERSION
     event: TransactionEvent
     features: TransactionFeatures
-    processed_at: AwareDatetime
+    processed_at: UtcDatetime
 
     @property
     def partition_key(self) -> bytes:
@@ -196,7 +200,7 @@ class ScoredTransaction(_Contract):
     graph_features: dict[str, float] | None = None
     risk: RiskAssessment
     models: dict[str, str] = Field(default_factory=dict, description="signal -> name:version")
-    scored_at: AwareDatetime
+    scored_at: UtcDatetime
 
     @property
     def partition_key(self) -> bytes:

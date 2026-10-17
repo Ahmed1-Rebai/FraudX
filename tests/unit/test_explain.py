@@ -151,3 +151,13 @@ def test_claude_failures_fall_back_to_the_template():
     ungrounded, _ = _client(_response({"summary": "x", "reasons": [
         {"text": "y", "evidence": ["nope"]}]}))  # fmt: skip
     assert ClaudeExplainer(client=ungrounded).explain(e).generator == "template"
+
+
+def test_malformed_claude_output_falls_back_instead_of_raising():
+    """An exception here would make the alert handler retry the partition forever."""
+    e = ev.build(_scored(["takeover_pattern"]), CONFIG)
+    for text in ("not json", '{"summary": "x"}', '{"summary": "x", "reasons": [{"text": 1}]}'):
+        block = SimpleNamespace(type="text", text=text)
+        response = SimpleNamespace(content=[block], stop_reason="end_turn", model="claude-opus-5-5")
+        client, _ = _client(response)
+        assert ClaudeExplainer(client=client).explain(e).generator == "template"

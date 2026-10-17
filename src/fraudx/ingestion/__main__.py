@@ -9,7 +9,7 @@ import argparse
 import logging
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fraudx.core.config import KafkaSettings
@@ -45,17 +45,33 @@ def _generate(args: argparse.Namespace) -> int:
     return 0
 
 
+def default_id_prefix(rebase_time: bool, now: datetime | None = None) -> str:
+    """A rebased replay is a new set of transactions: give it fresh ids.
+
+    Re-sending the same ids with new times would be read as redeliveries
+    (cached features) and duplicate rows in the per-customer history.
+    """
+    if not rebase_time:
+        return ""
+    return f"R{(now or datetime.now(UTC)):%Y%m%d%H%M%S}-"
+
+
 def _replay(args: argparse.Namespace) -> int:
     path = args.dataset / EVENTS_FILE
     if not path.exists():
         log.error("no dataset at %s; run `make data` first", path)
         return 2
+    id_prefix = args.id_prefix
+    if id_prefix is None:
+        id_prefix = default_id_prefix(args.rebase_time)
     events = prepare(
         read_events(path),
         with_labels=args.with_labels,
         rebase_time=args.rebase_time,
-        id_prefix=args.id_prefix,
+        id_prefix=id_prefix,
     )
+    if id_prefix:
+        log.info("transaction ids prefixed with %r", id_prefix)
     with EventProducer(KafkaSettings(), "replay") as producer:
         report = replay(events, producer, rate=args.rate, limit=args.limit)
     log.info(
@@ -116,7 +132,10 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--limit", type=int)
     rp.add_argument("--rebase-time", action="store_true", help="shift event times to start now")
     rp.add_argument(
-        "--id-prefix", default="", help="prefix transaction ids to re-send a dataset as new ones"
+        "--id-prefix",
+        default=None,
+        help="prefix transaction ids to re-send a dataset as new transactions; with "
+        '--rebase-time the default is "R<UTC timestamp>-" (use --id-prefix "" to keep the ids)',
     )
     rp.add_argument(
         "--with-labels", action="store_true", help="keep is_fraud_label (evaluation runs only)"

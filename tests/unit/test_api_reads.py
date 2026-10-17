@@ -284,3 +284,52 @@ def test_live_stream_sends_compact_scored_events_and_closes_its_consumer():
     event = json.loads(lines[0][len("data: ") :])
     assert (event["transaction_id"], event["score"], event["level"]) == ("TX-1", 84, "HIGH")
     assert stores.consumer.closed
+
+
+def test_store_outages_answer_503_naming_the_store():
+    from cassandra.cluster import NoHostAvailable
+    from neo4j.exceptions import ServiceUnavailable
+    from pymongo.errors import ServerSelectionTimeoutError
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    outages = {
+        "history": (NoHostAvailable("down", {}), "/transactions/TX-1", "Cassandra"),
+        "profiles": (ServerSelectionTimeoutError("down"), "/customers/C-1", "MongoDB"),
+        "graph": (ServiceUnavailable("down"), "/customers/C-1/network", "Neo4j"),
+        "risk": (RedisConnectionError("down"), "/customers/C-1/risk", "Redis"),
+    }
+    for method, (error, path, store) in outages.items():
+        client, stores = _client()
+
+        def broken(*args, error=error):
+            raise error
+
+        setattr(stores, method, broken)
+        with client:
+            resp = client.get(path)
+        assert resp.status_code == 503, path
+        assert store in resp.json()["detail"]
+
+
+def test_simulate_rejects_what_the_pipeline_would_reject():
+    client, stores = _client()
+    body = {"customer_id": "C-1", "source_account": "A-1", "destination_account": "A-9",
+            "amount": 2500}  # fmt: skip
+    with client:
+        same = client.post("/transactions/simulate", json={**body, "destination_account": "A-1"})
+        huge = client.post("/transactions/simulate", json={**body, "amount": 10**20})
+    assert (same.status_code, huge.status_code) == (422, 422)
+    assert stores.kafka.sent == []
+
+
+def test_live_stream_skips_an_unreadable_message():
+    item = _featured(2, amount=10)
+    risk = RiskAssessment(score=1, level="LOW", components={"ml": 0.0}, assessed_at=T)
+    good = ScoredTransaction(event=item.event, features=item.features, risk=risk, scored_at=T)
+    client, stores = _client()
+    stores.consumer = FakeConsumer(
+        [b'{"not": "a scored transaction"}', good.model_dump_json().encode()]
+    )
+    with client, client.stream("GET", "/stream/scored?limit=1") as resp:
+        lines = [line for line in resp.iter_lines() if line.startswith("data: ")]
+    assert json.loads(lines[0][len("data: ") :])["transaction_id"] == "TX-2"
