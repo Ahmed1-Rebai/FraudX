@@ -5,6 +5,8 @@ label is stripped: a real transaction stream carries no fraud label, and a
 label on the wire would be an easy leak into online features.
 ``rebase_time`` shifts all event times by one constant so the first event is
 "now"; intervals between events (and so velocity patterns) are preserved.
+``id_prefix`` makes a re-send of a dataset a new set of transactions (same
+customers): without it the pipeline rightly treats them as redeliveries.
 """
 
 from __future__ import annotations
@@ -62,6 +64,7 @@ def prepare(
     events: Iterable[TransactionEvent],
     with_labels: bool = False,
     rebase_time: bool = False,
+    id_prefix: str = "",
     now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> Iterable[TransactionEvent]:
     offset: timedelta | None = None
@@ -73,6 +76,8 @@ def prepare(
             if offset is None:
                 offset = now() - event.event_time
             update["event_time"] = event.event_time + offset
+        if id_prefix:
+            update["transaction_id"] = id_prefix + event.transaction_id
         yield event.model_copy(update=update) if update else event
 
 

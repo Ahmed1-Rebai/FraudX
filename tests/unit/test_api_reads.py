@@ -1,8 +1,12 @@
+import json
 from datetime import UTC, date, datetime
 
 from fastapi.testclient import TestClient
 
 from fraudx.api.app import create_app
+from fraudx.core.schemas import RiskAssessment, ScoredTransaction
+
+from .test_scorer import _featured
 
 T = datetime(2026, 2, 1, 9, 30, tzinfo=UTC)
 TX = {
@@ -70,9 +74,50 @@ class FakeInvestigations:
     def get(self, tx):
         return dict(INVESTIGATION) if tx == "TX-1" else None
 
+    def counts(self):
+        return {"OPEN": 5, "CONFIRMED_FRAUD": 3, "FALSE_POSITIVE": 1, "DISMISSED": 0}
+
     def decide(self, tx, status, note):
         self.decisions.append((tx, status, note))
         return {**INVESTIGATION, "status": status, "analyst_note": note} if tx == "TX-1" else None
+
+
+class FakePrometheus:
+    def __init__(self, up=True):
+        self.up = up
+
+    def by_label(self, promql, label):
+        if not self.up:
+            raise OSError("connection refused")
+        return {"LOW": 900.0, "MEDIUM": 70.0, "HIGH": 30.0}
+
+    def scalar(self, promql):
+        return 12.5 if "risk_score" in promql else 30.0 if "alerts" in promql else 4.2
+
+    def series(self, promql, start, end, step):
+        return [(1.0, 3.0), (31.0, 4.0)]
+
+
+class FakeKafkaMessage:
+    def __init__(self, value):
+        self._value = value
+
+    def error(self):
+        return None
+
+    def value(self):
+        return self._value
+
+
+class FakeConsumer:
+    def __init__(self, payloads):
+        self.batches, self.closed = [payloads], False
+
+    def consume(self, n, timeout):
+        return [FakeKafkaMessage(v) for v in self.batches.pop(0)] if self.batches else []
+
+    def close(self):
+        self.closed = True
 
 
 class FakeProducer:
@@ -91,6 +136,8 @@ class FakeStores:
         self.reader = FakeReader()
         self.kafka = FakeProducer()
         self.cases = FakeInvestigations()
+        self.prom = FakePrometheus()
+        self.consumer = FakeConsumer([])
         self.closed = False
 
     def history(self):
@@ -103,6 +150,12 @@ class FakeStores:
 
     def investigations(self):
         return self.cases
+
+    def prometheus(self):
+        return self.prom
+
+    def stream_consumer(self):
+        return self.consumer
 
     def close(self):
         self.closed = True
@@ -205,3 +258,29 @@ def test_analyst_decision():
     assert resp.json()["status"] == "FALSE_POSITIVE" and resp.json()["analyst_note"] == "travel"
     assert (bad.status_code, missing.status_code) == (422, 404)
     assert stores.cases.decisions[0] == ("TX-1", "FALSE_POSITIVE", "travel")
+
+
+def test_overview_kpis_and_analyst_precision():
+    client, stores = _client()
+    with client:
+        body = client.get("/stats/overview").json()
+        stores.prom.up = False
+        degraded = client.get("/stats/overview").json()
+    assert body["scored"] == 1000 and body["by_level"]["HIGH"] == 30
+    assert (body["alerts"], body["avg_risk_score"], body["transactions_per_s"]) == (30.0, 12.5, 4.2)
+    assert body["confirmed_precision"] == 0.75 and len(body["throughput"]) == 2
+    assert degraded["metrics_available"] is False and degraded["investigations"]["OPEN"] == 5
+
+
+def test_live_stream_sends_compact_scored_events_and_closes_its_consumer():
+    item = _featured(1, amount=5000)
+    risk = RiskAssessment(score=84, level="HIGH", components={"ml": 1.0}, assessed_at=T)
+    scored = ScoredTransaction(event=item.event, features=item.features, risk=risk, scored_at=T)
+    client, stores = _client()
+    stores.consumer = FakeConsumer([scored.model_dump_json().encode()])
+    with client, client.stream("GET", "/stream/scored?limit=1") as resp:
+        lines = [line for line in resp.iter_lines() if line.startswith("data: ")]
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    event = json.loads(lines[0][len("data: ") :])
+    assert (event["transaction_id"], event["score"], event["level"]) == ("TX-1", 84, "HIGH")
+    assert stores.consumer.closed

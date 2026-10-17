@@ -72,7 +72,7 @@ consumes `transactions.features`: the scorer reads the graph it builds.
 | `alerts` | **done** | `python -m fraudx.alerts`: `fraud.alerts` → MongoDB investigation with evidence + explanation, optional webhook (§7) |
 | `explain` | **done** | Evidence → grounded explanation: deterministic template (default) or Claude (§7) |
 | `api` | **done (Phase 8)** | REST API aggregating the stores (`storage.readers`): transactions and alert feed (Cassandra), profile (MongoDB), network (Neo4j), latest risk (Redis), `POST /transactions/simulate` (Kafka); `/health`, `/health/ready`, `/metrics` |
-| frontend | Phase 10 | React + TypeScript dashboard |
+| `frontend` | **done** | React + TypeScript (Vite) dashboard served by nginx (`dashboard`, :8090), `/api` proxied to the API: overview KPIs, live stream (SSE), investigations with cited explanations and decisions, customer graph (§13) |
 
 All Python services are entrypoints of **one package** (`src/fraudx`) built into
 **one image**; compose selects the command. Shared contracts
@@ -491,3 +491,21 @@ rationale, rows and labels affected) → canonicalize (to `TransactionEvent`) �
 features (online code on the disposable `redis-offline`, ADR-026) → train.
 Each dataset gets a generated report in `docs/data/`. Fields a source lacks
 stay empty; nothing is invented. See [docs/data/README.md](docs/data/README.md).
+
+## 13. Dashboard (`frontend/`)
+
+React + TypeScript built with Vite; nginx serves it and proxies `/api` to the
+API (same origin, no CORS; buffering off for the SSE stream). Pages follow the
+spec:
+
+| Page | Data |
+|---|---|
+| Overview | KPIs from `GET /stats/overview`: scored, tx/s and its 30-min sparkline, levels, average score (Prometheus, last 24 h); confirmed fraud and **analyst-confirmed precision** (MongoDB decisions: the live stream carries no labels, ADR-019); the day's alert feed (Cassandra) |
+| Live stream | `GET /stream/scored` (SSE): each viewer reads `transactions.scored` from its end with a throw-away consumer group, so viewers never affect the pipeline |
+| Investigations | queue (MongoDB), case in the spec's order: transaction → risk score → ML / anomaly / graph signals → graph relationships → explanation with each reason's cited evidence → analyst decision |
+| Graph | a customer's devices, the customers sharing them, and money counterparties (Neo4j), with the device and counterparty tables |
+
+Charts follow one method: risk levels use the fixed status palette with an
+icon and a label (never color alone); node kinds use three categorical slots
+validated for color-vision deficiency in both themes; light and dark are
+separate token sets, with a manual override.

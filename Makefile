@@ -3,7 +3,7 @@
 COMPOSE := docker compose
 INFRA := kafka kafka-init mongodb cassandra cassandra-init redis neo4j neo4j-init
 
-.PHONY: data data-train features train tune-risk offline-redis offline-neo4j download-datasets paysim ibm-aml bench replay tail help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
+.PHONY: web web-build data data-train features train tune-risk offline-redis offline-neo4j download-datasets paysim ibm-aml bench replay tail help env install lint format test test-integration check up infra down clean ps logs build api topics cqlsh mongosh redis-cli cypher
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -81,6 +81,12 @@ ibm-aml: offline-redis offline-neo4j ## IBM AML: profile -> clean -> canonicaliz
 bench: ## Storage benchmarks (MongoDB vs Cassandra, MongoDB vs Redis) -> docs/benchmarks/storage.md
 	set -a && . ./.env && set +a && uv run python -m fraudx.bench $(ARGS)
 
+web: ## Dashboard dev server on :5173 with hot reload (proxies /api to the API on API_PORT)
+	cd frontend && npm install --no-audit --no-fund && FRAUDX_API=http://localhost:$${API_PORT:-8000} npm run dev
+
+web-build: ## Type-check and build the dashboard (frontend/dist)
+	cd frontend && npm ci --no-audit --no-fund && npm run build
+
 replay: ## Publish data/generated to transactions.raw (ARGS="--rate 500 --rebase-time")
 	uv run python -m fraudx.ingestion replay $(ARGS)
 
@@ -92,6 +98,8 @@ build: ## Build the application image
 
 up: env ## Start the full platform and wait until healthy
 	$(COMPOSE) up -d --build --wait
+	@# Prometheus reads its bind-mounted config only at start: reload it in place.
+	$(COMPOSE) kill -s SIGHUP prometheus
 
 infra: env ## Start only Kafka + the four databases (+ provisioning)
 	$(COMPOSE) up -d --wait $(INFRA)

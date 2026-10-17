@@ -47,3 +47,8 @@ class Investigations:
             {"_id": transaction_id}, {"$set": update}, return_document=ReturnDocument.AFTER
         )
         return _out(doc)
+
+    def counts(self) -> dict[str, int]:
+        """Number of investigations per status."""
+        rows = self.collection.aggregate([{"$group": {"_id": "$status", "n": {"$sum": 1}}}])
+        return {status: 0 for status in STATUSES} | {r["_id"]: r["n"] for r in rows}

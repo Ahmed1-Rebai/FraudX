@@ -18,7 +18,7 @@ retrieved from four purpose-built NoSQL stores.
 - Engineering memory (decisions, progress, conventions): [memory.md](memory.md)
 - Original specification: [FraudX_README.md](FraudX_README.md)
 
-> **Status:** Phases 0–9 are complete: replayed transactions flow through Kafka, get online
+> **Status:** Phases 0–10 are complete: replayed transactions flow through Kafka, get online
 > features in Redis, and land in Cassandra, MongoDB and Neo4j, which the API reads back.
 > A versioned LightGBM model, an Isolation Forest anomaly detector and a graph model are
 > trained and registered, on the synthetic data and on PaySim and IBM AML HI-Small (reports in
@@ -28,7 +28,8 @@ retrieved from four purpose-built NoSQL stores.
 > the three calibrated signals and two rules into a 0–100 risk score for every transaction
 > and raises alerts (live: precision 0.79, recall 0.88 on the demo data).
 > Every alert opens an investigation with an evidence-grounded explanation (Phase 9).
-> Next: the dashboard (Phase 10).
+> The React dashboard (Phase 10) shows KPIs, the live stream, investigations and the graph.
+> Next: Grafana dashboards (Phase 11).
 
 ## Quick start
 
@@ -46,6 +47,7 @@ Without make: `cp .env.example .env && docker compose up -d --wait`.
 
 | URL | Service |
 |---|---|
+| http://localhost:8090 | **FraudX dashboard** (overview, live stream, investigations, graph) |
 | http://localhost:8000/docs | FraudX API (OpenAPI) |
 | http://localhost:8080 | Kafka UI |
 | http://localhost:7474 | Neo4j browser |
@@ -68,6 +70,8 @@ API endpoints (each one reads the store whose data model fits the query):
 | `GET /fraud/investigations?status=` | MongoDB | analyst queue, newest first |
 | `GET /fraud/{tx}` · `/fraud/{tx}/explanation` | MongoDB | case: risk breakdown, evidence, explanation with each reason's cited values |
 | `PATCH /fraud/{tx}` | MongoDB | analyst decision: `CONFIRMED_FRAUD`, `FALSE_POSITIVE`, `DISMISSED` |
+| `GET /stream/scored` | Kafka | live scored transactions (Server-Sent Events) |
+| `GET /stats/overview` | Prometheus + MongoDB | dashboard KPIs (last 24 h) and analyst-confirmed precision |
 | `GET /health`, `/health/ready`, `/metrics/` | all | liveness, dependency readiness, Prometheus |
 
 ## Development
@@ -81,6 +85,8 @@ make test-integration   # integration tests against the running stack
 make data               # generate the synthetic dataset (data/generated)
 make data-train && make features && make train   # train + register the fraud model
 make replay             # publish it to transactions.raw (ARGS="--rate 500 --rebase-time")
+make replay ARGS="--rate 20 --rebase-time --id-prefix LIVE1-"   # live demo: re-send as new transactions
+make web                # dashboard dev server with hot reload (:5173)
 make tail T=transactions.raw ARGS="--from-beginning -n 3"
 make bench              # storage benchmarks -> docs/benchmarks/storage.md
 make help               # every command
@@ -124,5 +130,5 @@ fraudx/
 | 7 | Graph features and graph model | done |
 | 8 | Scorer service, calibrated risk engine, alerts | done |
 | 9 | Investigations with evidence-grounded explanations (template / Claude) | done |
-| 10 | API endpoints and React dashboard | read endpoints done |
+| 10 | API endpoints and React dashboard | done |
 | 11 | Benchmarks and Grafana dashboards | storage benchmarks done |

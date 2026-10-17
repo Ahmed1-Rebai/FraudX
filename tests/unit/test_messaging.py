@@ -222,6 +222,9 @@ def test_prepare_strips_labels_and_rebases_time():
     assert out[0].event_time == fixed_now
     assert out[1].event_time - out[0].event_time == timedelta(minutes=5)
     assert next(iter(prepare([base], with_labels=True))).is_fraud_label is True
+    resent = next(iter(prepare([base], id_prefix="LIVE1-")))
+    assert resent.transaction_id == f"LIVE1-{base.transaction_id}"
+    assert resent.customer_id == base.customer_id
 
 
 def test_replay_keys_by_customer_and_respects_limit():

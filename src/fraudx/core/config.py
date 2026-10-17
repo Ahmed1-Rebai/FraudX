@@ -32,6 +32,7 @@ class AppSettings(BaseSettings):
     log_format: Literal["json", "text"] = "json"
     risk_config_path: Path = Path("config/risk.yaml")
     dependency_timeout_s: float = Field(default=3.0, gt=0)
+    prometheus_url: str = "http://localhost:9090"  # dashboard KPIs (GET /stats/overview)
 
 
 class WorkerSettings(BaseSettings):

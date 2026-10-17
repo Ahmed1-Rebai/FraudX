@@ -7,18 +7,23 @@ store is still down; a failed connection is retried on the next request.
 from __future__ import annotations
 
 import threading
+import uuid
 from collections.abc import Callable
 from typing import Any
 
+from confluent_kafka import Consumer
 from fastapi import Request
 
+from fraudx.api.prometheus import Prometheus
 from fraudx.core.config import (
     CassandraSettings,
     KafkaSettings,
     MongoSettings,
     Neo4jSettings,
     RedisSettings,
+    get_app_settings,
 )
+from fraudx.core.topics import TRANSACTIONS_SCORED
 from fraudx.messaging.producer import EventProducer
 from fraudx.storage import clients
 from fraudx.storage.investigations import Investigations
@@ -42,6 +47,21 @@ class Stores:
 
     def investigations(self) -> Investigations:
         return Investigations(self.profiles().db)  # same MongoDB client
+
+    def prometheus(self) -> Prometheus:
+        return Prometheus(get_app_settings().prometheus_url)
+
+    def stream_consumer(self) -> Consumer:
+        """A new consumer at the end of ``transactions.scored`` (caller closes it)."""
+        settings = KafkaSettings()
+        consumer = Consumer({
+            "bootstrap.servers": settings.bootstrap_servers,
+            "group.id": f"fraudx-api-stream-{uuid.uuid4().hex[:8]}",
+            "enable.auto.commit": False,
+            "auto.offset.reset": "latest",
+        })  # fmt: skip
+        consumer.subscribe([TRANSACTIONS_SCORED])
+        return consumer
 
     def risk(self) -> RiskReader:
         return self._get("risk", self._connect_risk)

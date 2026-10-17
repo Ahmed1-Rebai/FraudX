@@ -190,6 +190,13 @@ Grafana `:3000`.
       Offline builds moved to a disposable `redis-offline` service
       (`OnlineFeatureStore(cache_results=False)`); `ml build-features` refuses
       to run without it. Polars added. Tests: 101 unit, 24 integration
+- [x] **Phase 10, dashboard (ADR-032):** `frontend/` React + TypeScript
+      (Vite), nginx image `dashboard` (:8090, `/api` proxy, SSE-safe); pages
+      overview (KPIs via `GET /stats/overview`), live stream (`GET
+      /stream/scored`, SSE), investigations (case + cited explanation +
+      decision), graph (radial SVG). `replay --id-prefix` re-sends a dataset
+      as new transactions for live demos. `make up` reloads Prometheus (SIGHUP).
+      Tests: 135 unit, 33 integration; screenshots checked in both themes
 - [x] **Phase 9, investigations + explanations (ADR-009):** alert handler
       (`python -m fraudx.alerts`, compose `alert-handler`) → MongoDB
       investigation with evidence + grounded explanation (template default,
@@ -589,6 +596,25 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 - **Impact:** `fraudx.ml`; the scorer (Phase 8) loads the active registry
   version with `FraudModel`.
 
+### ADR-032: Dashboard: React + TypeScript behind nginx, SSE for the live stream, analyst-confirmed precision
+- **Decision:** A Vite React TypeScript app with React as the only runtime
+  dependency (charts and graph in hand-written SVG), built into an nginx image
+  that proxies `/api`. The live stream is Server-Sent Events from
+  `transactions.scored` (one throw-away consumer group per viewer, from the
+  topic end). KPIs come from Prometheus (the counters already exist) and
+  MongoDB; "model accuracy" is the analyst-confirmed precision of decided
+  investigations.
+- **Reason:** The spec asks for React + TypeScript. SSE is one-way, works
+  through a plain HTTP proxy and reconnects by itself, which is all a live
+  feed needs (no WebSocket). Live traffic has no labels (ADR-019), so the
+  only honest live accuracy is the analysts' verdicts.
+- **Trade-offs:** KPIs depend on Prometheus (the endpoint reports
+  `metrics_available: false` and keeps the MongoDB figures if it is down).
+  Each SSE viewer is one Kafka consumer. Rebased replays faster than real
+  time produce future event times (the intervals are preserved).
+- **Impact:** `frontend/`, `api/routes/{stats,stream}.py`,
+  `api/prometheus.py`, compose `dashboard`, ARCHITECTURE §13.
+
 ### ADR-031: Scorer runtime: graceful degradation, hot model reload, writers on the scored stream
 - **Decision:** One scorer service (batch 500) computes graph features
   (Neo4j), three calibrated signals and rules per batch. A Neo4j error drops
@@ -878,7 +904,8 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 
 1. IBM AML graph features + graph model (build running, ~1.5–2 h): compare
    with the supervised baseline 0.147.
-2. **Phase 10 – dashboard**, then Grafana dashboards (11).
+2. **Phase 11 – Grafana dashboards** (pipeline throughput, latency, lag,
+   scores, alerts, store writers) and the streaming benchmark.
 3. Feedback loop (later): a confirmed-fraud decision could set `fraud_flag` in
    Neo4j and feed a `transactions.labels` topic for retraining.
 
@@ -889,6 +916,12 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   bind empty collections as UNSET.
 * `git stash -u` during a long background job removes files a *new* process
   of that job may import; verify a commit in a separate `git worktree`.
+* Prometheus reads a bind-mounted config only at start; `docker compose up`
+  doesn't restart it when the file changes (the scorer was unscraped for a
+  while). `make up` now sends SIGHUP to reload it.
+* Headless Chrome's `--virtual-time-budget`/`--timeout` stall or starve pages
+  with an open SSE stream; drive Chrome over the DevTools protocol and wait
+  real time to screenshot a live page.
 * `pkill -f <pattern>` also matches the shell that runs it when the pattern
   appears in its own command line.
 * A tool that selects "the latest model" must filter by model name once

@@ -50,7 +50,12 @@ def _replay(args: argparse.Namespace) -> int:
     if not path.exists():
         log.error("no dataset at %s; run `make data` first", path)
         return 2
-    events = prepare(read_events(path), with_labels=args.with_labels, rebase_time=args.rebase_time)
+    events = prepare(
+        read_events(path),
+        with_labels=args.with_labels,
+        rebase_time=args.rebase_time,
+        id_prefix=args.id_prefix,
+    )
     with EventProducer(KafkaSettings(), "replay") as producer:
         report = replay(events, producer, rate=args.rate, limit=args.limit)
     log.info(
@@ -110,6 +115,9 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--rate", type=float, default=200.0, help="events/s, 0 = unthrottled")
     rp.add_argument("--limit", type=int)
     rp.add_argument("--rebase-time", action="store_true", help="shift event times to start now")
+    rp.add_argument(
+        "--id-prefix", default="", help="prefix transaction ids to re-send a dataset as new ones"
+    )
     rp.add_argument(
         "--with-labels", action="store_true", help="keep is_fraud_label (evaluation runs only)"
     )
