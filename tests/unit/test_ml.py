@@ -71,6 +71,10 @@ def test_register_rejects_a_directory_without_metadata(tmp_path):
     assert main(["register", str(tmp_path)]) == 2
 
 
+def test_tune_risk_rejects_an_unknown_signal():
+    assert main(["tune-risk", "--model", "fraudiness=models/x"]) == 2
+
+
 def _toy_matrix(n=6000, seed=0):
     rng = np.random.default_rng(seed)
     X = rng.normal(size=(n, len(FEATURE_NAMES))).astype(np.float32)

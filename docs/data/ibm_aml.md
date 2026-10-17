@@ -222,7 +222,7 @@ Coverage = share of rows where the feature has a value; a feature with one disti
 
 ## 7. Model results
 
-Model `fraud_lgbm:20261016223640-22c237be` (LightGBM; time-based 70/15/15 split; threshold 0.1062 chosen on validation).
+Model `fraud_lgbm:20261017054352-22c237be` (LightGBM; time-based 70/15/15 split; threshold 0.1062 chosen on validation).
 
 | set | rows | positives | PR-AUC | ROC-AUC | precision | recall | F1 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -265,8 +265,9 @@ Detectors trained on this dataset (test set; matched = at the dataset's fraud ra
 
 | detector | model | PR-AUC | PR-AUC matched | ROC-AUC |
 | --- | --- | --- | --- | --- |
-| supervised (LightGBM, transaction features) | `20261016223640-22c237be` | 0.1468 | 0.1244 | 0.9728 |
-| anomaly (Isolation Forest, legitimate traffic) | `20261016225038-22c237be` | 0.0019 | 0.0015 | 0.6179 |
+| supervised (LightGBM, transaction features) | `20261017054352-22c237be` | 0.1468 | 0.1244 | 0.9728 |
+| anomaly (Isolation Forest, legitimate traffic) | `20261017054407-22c237be` | 0.0019 | 0.0015 | 0.6179 |
+| graph (LightGBM, graph features) | `20261017002114-b656ed9b` | 0.0534 | 0.047 | 0.9257 |
 
 ## 8. Limitations
 

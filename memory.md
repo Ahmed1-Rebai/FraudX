@@ -690,6 +690,13 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 - **Result (synthetic):** graph model alone test PR-AUC 0.141 (holdout 0.218)
   but app_scam and both takeovers at 100 % recall, new_payee FPR 1.4 %;
   without the device-ring features 0.011.
+- **Result (IBM AML, 2026-10-17):** graph model alone test PR-AUC 0.053
+  (one-hop counts; no devices in IBM, so half the features are 0), but in
+  the combined engine (`tune-risk --model ...`, report
+  `docs/experiments/2026-10-17-risk-engine-ibm_aml.md`) it lifts PR-AUC to
+  **0.197** from 0.138 without it (supervised alone 0.147 raw / 0.132
+  calibrated). Stacking reaches 0.253 there: on laundering data a learned
+  combiner is worth revisiting. The 3.7 h offline build is the cost.
 - **Impact:** `storage/graph_features.py`, `ml/graph_dataset.py`, CLI
   `build-graph-features`, `train --graph`, compose `neo4j-offline`,
   `make offline-neo4j/features/train/ibm-aml`, ARCHITECTURE §6.3.

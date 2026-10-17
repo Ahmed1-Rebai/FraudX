@@ -367,6 +367,10 @@ an offline replay gives the live values.
   (`graph_lgbm`, same protocol and report as §6.1). Its probability is the
   risk engine's `graph` signal; the transaction-feature model stays the `ml`
   signal, so each signal can be explained and weighted on its own.
+* **Value, measured:** on synthetic data the graph model catches `app_scam`
+  (100 % recall, supervised 0 %); dropping it costs the engine 0.08 PR-AUC.
+  On IBM AML it is weak alone (0.053) but lifts the engine from 0.138 to
+  0.197 PR-AUC. `tune-risk --model SIGNAL=DIR` evaluates any set of models.
 
 ## 7. Alerts, investigations and explanations
 

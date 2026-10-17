@@ -8,7 +8,7 @@ python -m fraudx.ml train-anomaly --dataset data/training/synthetic [--holdout d
                                   [--register] [--activate]
 python -m fraudx.ml register models/<name>/<version> [--activate]
 python -m fraudx.ml tune-risk --dataset data/training/synthetic --holdout data/generated
-                              [--write-config]   (uses the active models)
+                              [--write-config] [--model SIGNAL=DIR ...]   (default: active models)
 """
 
 from __future__ import annotations
@@ -136,19 +136,27 @@ def _train_anomaly(args: argparse.Namespace) -> int:
 
 def _tune_risk(args: argparse.Namespace) -> int:
     from fraudx.scoring import tuning
-    from fraudx.scoring.detectors import load_active
+    from fraudx.scoring.detectors import SIGNAL_MODELS, load, load_active
 
-    settings = MongoSettings()
-    client = mongo_client(settings)
-    try:
-        detectors = load_active(client[settings.db])
-    finally:
-        client.close()
+    if args.model:  # evaluate given artifacts, e.g. models trained on another dataset
+        pairs = dict(m.split("=", 1) for m in args.model)
+        unknown = set(pairs) - set(SIGNAL_MODELS)
+        if unknown:
+            log.error("unknown signal(s) %s; use %s", sorted(unknown), sorted(SIGNAL_MODELS))
+            return 2
+        detectors = {signal: load(signal, Path(path)) for signal, path in pairs.items()}
+    else:
+        settings = MongoSettings()
+        client = mongo_client(settings)
+        try:
+            detectors = load_active(client[settings.db])
+        finally:
+            client.close()
     if not detectors:
         log.error("no active models in the registry; run `make train` first")
         return 2
     result = tuning.tune(args.dataset, detectors, args.holdout)
-    report_path = args.reports_dir / f"{result['tuned_at'][:10]}-risk-engine.md"
+    report_path = args.reports_dir / f"{result['tuned_at'][:10]}-risk-engine-{args.dataset.name}.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(tuning.render(result), encoding="utf-8")
     log.info("weights %s, thresholds %s; report %s", result["weights"], result["thresholds"],
@@ -222,6 +230,13 @@ def main(argv: list[str] | None = None) -> int:
     k.add_argument("--reports-dir", type=Path, default=Path("docs/experiments"))
     k.add_argument("--config", type=Path, default=Path("config/risk.yaml"))
     k.add_argument("--write-config", action="store_true", help="write the tuned config file")
+    k.add_argument(
+        "--model",
+        action="append",
+        default=[],
+        metavar="SIGNAL=DIR",
+        help="evaluate this artifact for a signal (repeatable) instead of the active one",
+    )
     k.set_defaults(func=_tune_risk)
 
     r = sub.add_parser("register", help="record a saved model in MongoDB model_registry")
