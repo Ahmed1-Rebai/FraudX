@@ -14,8 +14,8 @@ from fraudx.core.schemas import (
 from fraudx.messaging.consumer import PermanentError
 from fraudx.messaging.producer import EventProducer
 from fraudx.ml.vectorize import FEATURE_NAMES
-from fraudx.scoring.detectors import Detector
-from fraudx.scoring.scorer import ActiveModels, Scorer
+from fraudx.scoring.detectors import ActiveModels, Detector
+from fraudx.scoring.scorer import Scorer
 
 CONFIG = RiskConfig.model_validate({
     "weights": {"ml": 0.5, "anomaly": 0.1, "graph": 0.4},
@@ -25,11 +25,11 @@ T = datetime(2026, 1, 2, 3, 4, tzinfo=UTC)
 AMOUNT = FEATURE_NAMES.index("amount_log")
 
 
-def _featured(n, amount=10, **features):
+def _featured(n, amount=10, tx_type="PAYMENT", dest="M-1", **features):
     event = TransactionEvent.model_validate({
         "transaction_id": f"TX-{n}", "event_time": T, "customer_id": "C-1",
-        "source_account": "A-1", "destination_account": "M-1", "amount": amount,
-        "transaction_type": "PAYMENT", "device_id": "D-1",
+        "source_account": "A-1", "destination_account": dest, "amount": amount,
+        "transaction_type": tx_type, "device_id": "D-1",
     })  # fmt: skip
     base = {
         "cust_txn_count_5m": 1, "cust_txn_count_1h": 1, "cust_txn_count_24h": 1,
@@ -89,11 +89,13 @@ DETECTORS = {
 }
 
 
-def _scorer(graph=lambda events: [[0.0] * 6 for _ in events]):
+def _scorer(graph=lambda events: [[0.0] * 6 for _ in events], known=None):
     kafka, redis = FakeKafka(), FakeRedis()
     models = ActiveModels(lambda: {"v": "1"}, lambda: DETECTORS)
     producer = EventProducer(KafkaSettings(), "t", producer=kafka)
-    return Scorer(models, graph, CONFIG, producer, redis, now=lambda: T), kafka, redis
+    scorer = Scorer(models, graph, lambda: CONFIG, producer, redis, known_fraud=known,
+                    now=lambda: T)  # fmt: skip
+    return scorer, kafka, redis
 
 
 def test_scores_every_transaction_and_alerts_only_high_risk():
@@ -146,3 +148,28 @@ def test_models_reload_only_when_active_versions_change():
     models.get()
     models.get()
     assert loads == [{"fraud_lgbm": "v1"}, {"fraud_lgbm": "v2"}]
+
+
+def test_first_transfer_to_a_confirmed_payee_goes_to_review_with_its_evidence():
+    def known(events):
+        return [{"distance_to_known_fraud": 0.0, "fraud_neighbor_count": 2.0} for _ in events]
+
+    first_payment = [[0.0, 0.0, 0.0, 1.0, 0.0, 0.0]]  # is_new_payee = 1
+    scorer, kafka, _ = _scorer(graph=lambda events: first_payment * len(events), known=known)
+    scorer([Msg(_featured(1, tx_type="TRANSFER", dest="A-9"))])  # harmless for the models
+    out = kafka.produced[0][1]
+    assert out.risk.rule_hits == ("payee_confirmed_fraud",)
+    assert (out.risk.score, out.risk.level) == (8, RiskLevel.MEDIUM)  # floor = review threshold
+    assert out.graph_features["distance_to_known_fraud"] == 0.0
+    assert out.graph_features["fraud_neighbor_count"] == 2.0
+    assert out.graph_features["is_new_payee"] == 1.0
+
+
+def test_known_fraud_outage_only_disables_its_rules():
+    def down(events):
+        raise ServiceUnavailable("neo4j down")
+
+    scorer, kafka, _ = _scorer(known=down)
+    scorer([Msg(_featured(1))])
+    out = kafka.produced[0][1]
+    assert out.risk.rule_hits == () and out.risk.missing_signals == ()

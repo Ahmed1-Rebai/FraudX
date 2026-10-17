@@ -2,11 +2,15 @@ import math
 
 import numpy as np
 
-from fraudx.core.schemas import RiskLevel
+from fraudx.core.schemas import RiskLevel, TransactionType
 from fraudx.ml import calibration
-from fraudx.ml.vectorize import FEATURE_NAMES
+from fraudx.ml.vectorize import FEATURE_NAMES, TYPE_CODES
 from fraudx.scoring import rules
 from fraudx.scoring.tuning import _best_threshold, combine, grid, to_score
+from fraudx.storage.feedback import GraphFeedback, payee_account
+
+TRANSFER = TYPE_CODES[TransactionType.TRANSFER]
+PAYMENT = TYPE_CODES[TransactionType.PAYMENT]
 
 
 def test_calibration_is_monotone_bounded_probability():
@@ -47,3 +51,26 @@ def test_engine_combination_and_floors():
     assert len(grid()) == 66 and all(math.isclose(sum(w.values()), 1) for w in grid())
     y = np.array([0, 0, 1, 1])
     assert _best_threshold(y, np.array([5, 10, 40, 60]), beta=1.0) == 11  # first separating score
+
+
+def test_known_fraud_rule_needs_a_first_transfer_to_a_confirmed_account():
+    transfer = rules.as_values(_vector(is_new_device=0, transaction_type=TRANSFER))
+    payment = rules.as_values(_vector(is_new_device=0, transaction_type=PAYMENT))
+    confirmed_first = {"distance_to_known_fraud": 0.0, "is_new_payee": 1.0}
+    assert rules.evaluate(transfer | confirmed_first) == [
+        ("payee_confirmed_fraud", RiskLevel.MEDIUM)
+    ]
+    assert rules.evaluate(transfer | confirmed_first | {"is_new_payee": 0.0}) == []  # repeat
+    assert rules.evaluate(payment | confirmed_first) == []  # not a transfer
+    assert rules.evaluate(transfer | {"distance_to_known_fraud": 1.0, "is_new_payee": 1.0}) == []
+    assert rules.evaluate(transfer | {"payer_confirmed_fraud": 1.0}) == []  # evidence only
+    assert rules.evaluate(transfer) == []  # offline: no confirmations exist
+
+
+def test_feedback_marks_the_account_the_money_went_to():
+    transfer = {"transaction_id": "TX-1", "transaction_type": "TRANSFER",
+                "source_account": "A-1", "destination_account": "A-2"}  # fmt: skip
+    assert payee_account(transfer) == "A-2"
+    assert payee_account({**transfer, "transaction_type": "CASH_IN"}) == "A-1"
+    to_merchant = {**transfer, "destination_account": "M-00155"}
+    assert GraphFeedback(driver=None).record(to_merchant, confirmed=True) is None

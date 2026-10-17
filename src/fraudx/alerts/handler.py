@@ -74,6 +74,19 @@ def investigation(
     }
 
 
+def alert_text(doc: dict[str, Any]) -> str:
+    """The alert as plain text, in the format of the spec (§16)."""
+    evidence = doc["evidence"]
+    amount = f"{evidence['transaction.amount']:,.2f} {evidence['transaction.currency']}"
+    reasons = "\n".join(f"- {r}" for r in doc["explanation"]["reasons"][:3])
+    return (
+        f"🚨 {doc['risk']['level']} RISK TRANSACTION\n\n"
+        f"Transaction: {doc['_id']}\nCustomer: {doc['customer_id']}\n"
+        f"Amount: {amount}\nRisk Score: {doc['risk']['score']}/100\n\n"
+        f"Primary reasons:\n{reasons}"
+    )
+
+
 def post_webhook(url: str, payload: dict[str, Any], timeout_s: float = 5.0) -> None:
     request = urllib.request.Request(  # noqa: S310 - operator-configured http(s) URL
         url, data=json.dumps(payload, default=str).encode(), method="POST",
@@ -88,12 +101,13 @@ class AlertHandler:
         self,
         db: Database,
         explainer: Explainer,
-        config: RiskConfig,
+        config: RiskConfig | Callable[[], RiskConfig],
         webhook_url: str | None = None,
         notify: Callable[[str, dict[str, Any]], None] = post_webhook,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
-        self.db, self.explainer, self.config = db, explainer, config
+        self.db, self.explainer = db, explainer
+        self._config = config if callable(config) else (lambda: config)
         self.webhook_url, self._notify, self._now = webhook_url, notify, now
 
     def __call__(self, messages: list[Message]) -> list[tuple[Message, PermanentError]]:
@@ -113,12 +127,10 @@ class AlertHandler:
         new = [a for tx, a in alerts.items() if tx not in existing]
         profiles = {d["_id"]: d for d in self.db.customers.find(
             {"_id": {"$in": list({a.event.customer_id for a in new})}})}  # fmt: skip
-        now = self._now()
+        now, config = self._now(), self._config()
         docs = []
         for scored in new:
-            evidence = evidence_mod.build(
-                scored, self.config, profiles.get(scored.event.customer_id)
-            )
+            evidence = evidence_mod.build(scored, config, profiles.get(scored.event.customer_id))
             explanation = self.explainer.explain(evidence)
             docs.append(investigation(scored, evidence, explanation, now))
         if docs:
@@ -134,6 +146,7 @@ class AlertHandler:
 
     def _send(self, doc: dict[str, Any]) -> None:
         payload = {
+            "text": alert_text(doc),  # what Slack, Teams or Mattermost incoming webhooks display
             "transaction_id": doc["_id"], "customer_id": doc["customer_id"],
             "score": doc["risk"]["score"], "level": doc["risk"]["level"],
             "summary": doc["explanation"]["summary"],

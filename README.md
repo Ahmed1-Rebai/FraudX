@@ -71,7 +71,8 @@ API endpoints (each one reads the store whose data model fits the query):
 | `POST /transactions/simulate` | Kafka | inject a transaction into the live pipeline; read it back with `GET /transactions/{id}` |
 | `GET /fraud/investigations?status=` | MongoDB | analyst queue, newest first |
 | `GET /fraud/{tx}` · `/fraud/{tx}/explanation` | MongoDB | case: risk breakdown, evidence, explanation with each reason's cited values |
-| `PATCH /fraud/{tx}` | MongoDB | analyst decision: `CONFIRMED_FRAUD`, `FALSE_POSITIVE`, `DISMISSED` |
+| `PATCH /fraud/{tx}` | MongoDB + Neo4j | analyst decision; confirming fraud marks the payee account in the graph (known-fraud rule) |
+| `POST /models/predict` | models | the live scorer's decision and explanation for one transaction, no side effects |
 | `GET /stream/scored` | Kafka | live scored transactions (Server-Sent Events) |
 | `GET /stats/overview` | Prometheus + MongoDB | dashboard KPIs (last 24 h) and analyst-confirmed precision |
 | `GET /health`, `/health/ready`, `/metrics/` | all | liveness, dependency readiness, Prometheus |

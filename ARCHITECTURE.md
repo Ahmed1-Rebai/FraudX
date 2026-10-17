@@ -266,19 +266,50 @@ level = HIGH if score ≥ high, MEDIUM if ≥ medium, else LOW     (config/risk.
   ML alone; holdout alert precision 0.79, recall 0.88).
 * A missing signal (model not loaded, graph timeout) has its weight
   redistributed and is listed in `missing_signals`. It is never counted as 0.
-* Deterministic rules (`fraudx.scoring.rules`) set a minimum level; only
-  rules with ≥ 0.85 precision on training and holdout data are kept.
+* Deterministic rules (`fraudx.scoring.rules`) set a minimum level. A HIGH
+  floor needs ≥ 0.85 precision (`takeover_pattern`: 0.91 train / 0.86
+  holdout); MEDIUM floors route to the review queue (`burst_on_shared_device`
+  0.73 / 0.92; `payee_confirmed_fraud` 0.58 / 0.58, analyst feedback, §6.5).
 * ML training is offline (`ml` scripts → `models/` + `model_registry`); the
   scorer only loads a registered, versioned artifact.
 * Evaluation uses precision, recall, F1, ROC-AUC and **PR-AUC (primary)** with a
   time-based split. Accuracy is not used because of class imbalance.
 
+### 6.5 Analyst feedback: known fraud (`fraudx.storage.feedback`, ADR-033)
+
+```text
+PATCH /fraud/{tx} CONFIRMED_FRAUD ─► payee account marked in Neo4j (fraud_sources += tx)
+any other decision                 ─► this case's confirmation withdrawn (flag kept while others remain)
+scorer, per batch                  ─► distance_to_known_fraud · fraud_neighbor_count · payer_confirmed_fraud
+```
+
+* Spec §11.3 asks for `distance_to_known_fraud` and `fraud_neighbor_count`;
+  both need *known* fraud, which only analysts produce. A confirmation marks
+  the account the money went to (merchants never: they are hubs). The marks
+  live on `Account` nodes (indexed `fraud_flag`); while none exists, one
+  indexed lookup per batch is the whole cost.
+* They are rules and evidence, not model features: no training set holds
+  analyst decisions, so learning them would leak labels; the graph models
+  are unchanged.
+* **Measured** on the synthetic datasets with every earlier fraud confirmed
+  (perfect feedback): any payment to a confirmed account is only 0.20
+  precise (mules also receive their contacts' money); a **first TRANSFER**
+  from a payer to a confirmed account keeps every catch at **0.58** precision
+  (demo and training alike) and catches 63 % of the fraud sent to customer
+  accounts, including 12 of 18 authorised-push-payment scams, which the
+  models miss. Hence `payee_confirmed_fraud` = MEDIUM. The payer itself
+  confirmed (0.47 / 0.36) and a payee one hop from a confirmed account
+  (0.00) stay evidence only.
+
 ### 6.4 Scorer (`fraudx.scoring`)
 
 * Consumes `transactions.features` in batches of 500: vectorises the
-  transactions, reads their graph features from Neo4j in one query, scores
-  the three calibrated signals, evaluates the rules and calls the risk
-  engine. Publishes every `ScoredTransaction` (event, features, graph
+  transactions, reads their graph features and known-fraud proximity from
+  Neo4j (one query each), and takes one decision per transaction with
+  `scoring.engine.decide` (calibrated signals, rules, risk engine): the same
+  function serves `POST /models/predict`, so the API's prediction and the
+  pipeline's decision cannot drift. `config/risk.yaml` is re-read when it
+  changes (`make tune-risk` needs no restart). Publishes every `ScoredTransaction` (event, features, graph
   features, risk, model versions) to `transactions.scored`, alerts to
   `fraud.alerts`, and the customer's latest risk to Redis.
 * **Degradation:** a Neo4j error scores the batch without the graph signal
@@ -404,7 +435,10 @@ fraud.alerts ─► alert-handler ─► evidence (alert message + MongoDB profi
   the evidence, or it is dropped (`dropped_ungrounded` is stored).
 * The API serves the analyst queue (`GET /fraud/investigations`), one case
   (`GET /fraud/{tx}`), the explanation with each reason's cited values
-  (`GET /fraud/{tx}/explanation`) and the decision (`PATCH /fraud/{tx}`).
+  (`GET /fraud/{tx}/explanation`) and the decision (`PATCH /fraud/{tx}`),
+  which also feeds the graph (§6.5).
+* Webhook payloads carry a `text` field in the spec's alert format, so a
+  Slack, Teams or Mattermost incoming webhook displays them as they are.
 
 ## 8. Security
 

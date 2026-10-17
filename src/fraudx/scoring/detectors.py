@@ -16,6 +16,7 @@ The tuning command and the live scorer both use this module.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,3 +84,41 @@ def load_active(db: Database) -> dict[str, Detector]:
             continue
         detectors[signal] = load(signal, Path(doc["artifact_path"]))
     return detectors
+
+
+class ActiveModels:
+    """The active detectors, reloaded when the registry's active versions change."""
+
+    def __init__(
+        self,
+        active_ids: Callable[[], dict[str, str]],
+        load: Callable[[], dict[str, Detector]],
+        check_every_s: float = 60.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._active_ids, self._load = active_ids, load
+        self._every, self._clock = check_every_s, clock
+        self._ids: dict[str, str] | None = None
+        self._detectors: dict[str, Detector] = {}
+        self._checked = -float("inf")
+
+    def get(self) -> dict[str, Detector]:
+        if self._clock() - self._checked >= self._every:
+            self._checked = self._clock()
+            try:
+                ids = self._active_ids()
+                if ids != self._ids:
+                    self._detectors, self._ids = self._load(), ids
+                    log.info("models loaded", extra={"models": ids})
+            except Exception:
+                log.exception("model reload failed; keeping the loaded models")
+        return self._detectors
+
+
+def registry_ids(db: Database) -> dict[str, str]:
+    """Active model ids by model name (what ``ActiveModels`` watches)."""
+    return {
+        name: doc["_id"]
+        for name in SIGNAL_MODELS.values()
+        if (doc := registry.active(db, name)) is not None
+    }

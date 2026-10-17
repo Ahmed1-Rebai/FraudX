@@ -4,9 +4,10 @@ from datetime import UTC, date, datetime
 from fastapi.testclient import TestClient
 
 from fraudx.api.app import create_app
+from fraudx.api.routes.models import EXAMPLE
 from fraudx.core.schemas import RiskAssessment, ScoredTransaction
 
-from .test_scorer import _featured
+from .test_scorer import CONFIG, DETECTORS, _featured
 
 T = datetime(2026, 2, 1, 9, 30, tzinfo=UTC)
 TX = {
@@ -77,9 +78,16 @@ class FakeInvestigations:
     def counts(self):
         return {"OPEN": 5, "CONFIRMED_FRAUD": 3, "FALSE_POSITIVE": 1, "DISMISSED": 0}
 
+    def set_feedback(self, tx, feedback):
+        self.current = {**self.current, "feedback": feedback}
+        return self.current
+
     def decide(self, tx, status, note):
         self.decisions.append((tx, status, note))
-        return {**INVESTIGATION, "status": status, "analyst_note": note} if tx == "TX-1" else None
+        if tx != "TX-1":
+            return None
+        self.current = {**INVESTIGATION, "status": status, "analyst_note": note}
+        return self.current
 
 
 class FakePrometheus:
@@ -120,6 +128,15 @@ class FakeConsumer:
         self.closed = True
 
 
+class FakeFeedback:
+    def __init__(self):
+        self.calls = []
+
+    def record(self, transaction, confirmed):
+        self.calls.append((transaction["transaction_id"], confirmed))
+        return {"account": "A-9", "flagged": confirmed, "confirmations": int(confirmed)}
+
+
 class FakeProducer:
     def __init__(self):
         self.sent = []
@@ -136,6 +153,8 @@ class FakeStores:
         self.reader = FakeReader()
         self.kafka = FakeProducer()
         self.cases = FakeInvestigations()
+        self.graph_feedback = FakeFeedback()
+        self.models = {}
         self.prom = FakePrometheus()
         self.consumer = FakeConsumer([])
         self.closed = False
@@ -150,6 +169,15 @@ class FakeStores:
 
     def investigations(self):
         return self.cases
+
+    def feedback(self):
+        return self.graph_feedback
+
+    def detectors(self):
+        return self.models
+
+    def config(self):
+        return CONFIG
 
     def prometheus(self):
         return self.prom
@@ -333,3 +361,30 @@ def test_live_stream_skips_an_unreadable_message():
     with client, client.stream("GET", "/stream/scored?limit=1") as resp:
         lines = [line for line in resp.iter_lines() if line.startswith("data: ")]
     assert json.loads(lines[0][len("data: ") :])["transaction_id"] == "TX-2"
+
+
+def test_decision_feeds_the_graph():
+    client, stores = _client()
+    with client:
+        confirmed = client.patch("/fraud/TX-1", json={"status": "CONFIRMED_FRAUD"}).json()
+        client.patch("/fraud/TX-1", json={"status": "FALSE_POSITIVE"})
+    assert confirmed["feedback"] == {"account": "A-9", "flagged": True, "confirmations": 1}
+    assert stores.graph_feedback.calls == [("TX-1", True), ("TX-1", False)]
+
+
+def test_predict_returns_the_scorer_decision_with_cited_reasons():
+    client, stores = _client()
+    stores.models = DETECTORS
+    with client:
+        resp = client.post("/models/predict", json=EXAMPLE)
+        partial_graph = client.post(
+            "/models/predict", json={**EXAMPLE, "graph_features": {"is_new_payee": 1}}
+        )
+        stores.models = {}
+        no_models = client.post("/models/predict", json=EXAMPLE)
+    body = resp.json()
+    assert resp.status_code == 200 and body["level"] == "HIGH"  # 9,200 > 1,000: fake ML says fraud
+    assert set(body["models"]) == {"ml", "anomaly", "graph"} and body["missing_signals"] == []
+    assert "takeover_pattern" in body["rule_hits"]  # new device abroad drains 97 %
+    assert body["reasons"] and all(r["evidence"] for r in body["reasons"])
+    assert (partial_graph.status_code, no_models.status_code) == (422, 503)

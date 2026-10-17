@@ -35,6 +35,24 @@ class Explanation:
 Rule = Callable[[dict[str, Any]], Reason | None]
 
 
+def _known_fraud(e: dict[str, Any]) -> Reason | None:
+    """Analyst-confirmed accounts (spec §13). Proximity of one hop or more stays
+    evidence only: it was not indicative when measured (precision 0.00)."""
+    if e.get("graph.distance_to_known_fraud") == 0:
+        first = " This is the payer's first transfer to it." if e.get("graph.is_new_payee") else ""
+        return Reason(
+            f"The payee account was confirmed as a fraud recipient by an analyst.{first}",
+            ("graph.distance_to_known_fraud",) + (("graph.is_new_payee",) if first else ()),
+        )
+    if e.get("graph.payer_confirmed_fraud"):
+        return Reason(
+            "The paying account was itself confirmed by an analyst as a fraud recipient "
+            "(money moving on from a known mule).",
+            ("graph.payer_confirmed_fraud",),
+        )
+    return None
+
+
 def _takeover(e: dict[str, Any]) -> Reason | None:
     if not e.get("rules.takeover_pattern"):
         return None
@@ -152,6 +170,7 @@ def _signal(e: dict[str, Any]) -> Reason | None:
 
 
 RULES: tuple[Rule, ...] = (
+    _known_fraud,
     _takeover, _burst, _payee_ring, _customer_ring, _fan_in, _amount, _drain, _velocity,
     _new_payee, _new_context, _shared_device, _signal,
 )  # fmt: skip

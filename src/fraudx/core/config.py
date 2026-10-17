@@ -11,7 +11,9 @@ are tuned by analysts and versioned with the code, not per deployment.
 
 from __future__ import annotations
 
+import logging
 import tempfile
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -21,6 +23,7 @@ import yaml
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_log = logging.getLogger(__name__)
 _ENV = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
@@ -190,6 +193,34 @@ class RiskConfig(BaseModel):
         return cls.model_validate(raw.get("risk", raw))
 
 
+class RiskConfigWatcher:
+    """``config/risk.yaml``, re-read when the file changes (checked every ``check_every_s``).
+
+    ``make tune-risk --write-config`` takes effect without restarting the
+    services. An invalid new file is logged and the last good config kept.
+    """
+
+    def __init__(self, path: Path, check_every_s: float = 30.0) -> None:
+        self.path, self.check_every_s = path, check_every_s
+        self._config = RiskConfig.from_yaml(path)
+        self._mtime = path.stat().st_mtime
+        self._checked = time.monotonic()
+
+    def get(self) -> RiskConfig:
+        now = time.monotonic()
+        if now - self._checked >= self.check_every_s:
+            self._checked = now
+            try:
+                mtime = self.path.stat().st_mtime
+                if mtime != self._mtime:
+                    self._config, self._mtime = RiskConfig.from_yaml(self.path), mtime
+                    _log.info("risk config reloaded", extra={"path": str(self.path)})
+            except (OSError, ValueError) as exc:  # ValidationError is a ValueError
+                _log.warning("risk config not reloaded; keeping the previous one",
+                             extra={"error": f"{type(exc).__name__}: {exc}"})  # fmt: skip
+        return self._config
+
+
 @lru_cache
 def get_app_settings() -> AppSettings:
     return AppSettings()
@@ -198,3 +229,8 @@ def get_app_settings() -> AppSettings:
 @lru_cache
 def get_risk_config() -> RiskConfig:
     return RiskConfig.from_yaml(get_app_settings().risk_config_path)
+
+
+@lru_cache
+def get_risk_config_watcher() -> RiskConfigWatcher:
+    return RiskConfigWatcher(get_app_settings().risk_config_path)

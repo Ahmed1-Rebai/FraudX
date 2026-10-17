@@ -13,7 +13,7 @@ from fraudx.core.config import (
     MongoSettings,
     WorkerSettings,
     get_app_settings,
-    get_risk_config,
+    get_risk_config_watcher,
 )
 from fraudx.core.logging import configure_logging
 from fraudx.core.topics import FRAUD_ALERTS
@@ -49,7 +49,7 @@ def main() -> int:
         batch_handler=AlertHandler(
             mongo[mongo_settings.db],
             _explainer(ExplainSettings()),
-            get_risk_config(),
+            get_risk_config_watcher().get,
             webhook_url=AlertSettings().webhook_url,
         ),
         batch_size=100,

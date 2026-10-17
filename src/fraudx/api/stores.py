@@ -10,6 +10,7 @@ import logging
 import threading
 import uuid
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 from confluent_kafka import Consumer
@@ -22,11 +23,15 @@ from fraudx.core.config import (
     MongoSettings,
     Neo4jSettings,
     RedisSettings,
+    RiskConfig,
     get_app_settings,
+    get_risk_config_watcher,
 )
 from fraudx.core.topics import TRANSACTIONS_SCORED
 from fraudx.messaging.producer import EventProducer
+from fraudx.scoring.detectors import ActiveModels, Detector, load_active, registry_ids
 from fraudx.storage import clients
+from fraudx.storage.feedback import GraphFeedback
 from fraudx.storage.investigations import Investigations
 from fraudx.storage.readers import GraphReader, HistoryReader, ProfileReader, RiskReader
 
@@ -68,6 +73,21 @@ class Stores:
 
     def risk(self) -> RiskReader:
         return self._get("risk", self._connect_risk)
+
+    def feedback(self) -> GraphFeedback:
+        """Analyst decisions recorded in the graph (confirmed fraud accounts)."""
+        return GraphFeedback(self.graph().driver)
+
+    def detectors(self) -> dict[str, Detector]:
+        """The active models (registry in MongoDB), reloaded when they change."""
+        db = self.profiles().db
+        models = self._get(
+            "models", lambda: ActiveModels(partial(registry_ids, db), partial(load_active, db))
+        )
+        return models.get()
+
+    def config(self) -> RiskConfig:
+        return get_risk_config_watcher().get()
 
     def producer(self) -> EventProducer:
         """Publishes simulated transactions to Kafka."""

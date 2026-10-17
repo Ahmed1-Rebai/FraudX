@@ -51,6 +51,10 @@ def test_new_alert_opens_an_explained_investigation_once():
     assert doc["evidence"]["profile.home_country"] == "TN"
     assert len(doc["explanation"]["reasons"]) == len(doc["explanation"]["reason_evidence"])
     assert sent[0]["transaction_id"] == "TX-7" and sent[0]["level"] == "HIGH"
+    text = sent[0]["text"]  # Slack-ready, in the spec's format
+    assert text.startswith("🚨 HIGH RISK TRANSACTION")
+    assert "Amount: 900.00 TND" in text and "Risk Score: 61/100" in text
+    assert "- Account-takeover pattern" in text
     handler([Msg(_scored(["takeover_pattern"]))])  # redelivery
     assert db.investigations.writes == ["TX-7"] and len(sent) == 1
 

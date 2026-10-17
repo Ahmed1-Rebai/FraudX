@@ -44,6 +44,14 @@ class ExplanationOut(BaseModel):
     created_at: datetime
 
 
+class Feedback(BaseModel):
+    """What the decision changed in the graph: the payee account's confirmation mark."""
+
+    account: str
+    flagged: bool
+    confirmations: int
+
+
 class InvestigationSummary(BaseModel):
     transaction_id: str
     customer_id: str
@@ -54,6 +62,7 @@ class InvestigationSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
     analyst_note: str | None = None
+    feedback: Feedback | None = None
 
 
 class Investigation(InvestigationSummary):
@@ -145,8 +154,19 @@ def get_explanation(transaction_id: str, stores: StoresDep):
 
 @router.patch("/{transaction_id}", response_model=Investigation)
 def decide(transaction_id: str, body: Decision, stores: StoresDep):
-    """Record the analyst's decision (confirmed fraud, false positive, dismissed)."""
-    doc = stores.investigations().decide(transaction_id, body.status, body.note)
+    """Record the analyst's decision (confirmed fraud, false positive, dismissed, reopened).
+
+    The decision also feeds the graph: confirming fraud marks the payee account
+    as a confirmed fraud recipient, and any other decision withdraws this
+    case's confirmation. The scorer's known-fraud rules use these marks.
+    Idempotent: send the same decision again if it failed half-way (503).
+    """
+    cases = stores.investigations()
+    doc = cases.decide(transaction_id, body.status, body.note)
     if doc is None:
         raise HTTPException(status_code=404, detail="no investigation for this transaction")
+    transaction = stores.history().transaction(transaction_id)
+    if transaction is not None:
+        feedback = stores.feedback().record(transaction, confirmed=body.status == "CONFIRMED_FRAUD")
+        doc = cases.set_feedback(transaction_id, feedback) or doc
     return doc

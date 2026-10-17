@@ -80,3 +80,66 @@ def graph_features(
     for record in records:
         out[record["i"]] = [float(record[name]) for name in GRAPH_FEATURE_NAMES]
     return out
+
+
+# --- Known fraud (analyst feedback, fraudx.storage.feedback) -----------------------
+#
+# Not model features: confirmations exist only after analysts work, so no
+# training set holds them. They feed the deterministic rules and the
+# explanation instead (spec §11.3: distance_to_known_fraud, fraud_neighbor_count).
+
+_ANY_CONFIRMED = "MATCH (f:Account {fraud_flag: true}) RETURN count(f) > 0 AS any"
+
+_KNOWN_FRAUD = """
+UNWIND $rows AS row
+OPTIONAL MATCH (payee:Account {id: row.payee})
+OPTIONAL MATCH (payer:Account {id: row.payer})
+WITH row, payee, payer,
+     payee IS NOT NULL AND coalesce(payee.kind, '') <> 'MERCHANT' AS customer_payee
+RETURN row.i AS i,
+  coalesce(payer.fraud_flag, false) AS payer_confirmed_fraud,
+  CASE
+    WHEN NOT customer_payee THEN null
+    WHEN coalesce(payee.fraud_flag, false) THEN 0
+    WHEN EXISTS { MATCH (payee)-[:TRANSFERRED_TO]-(:Account {fraud_flag: true}) } THEN 1
+    WHEN EXISTS { MATCH (payee)-[:TRANSFERRED_TO]-(m:Account)
+                        -[:TRANSFERRED_TO]-(:Account {fraud_flag: true})
+                  WHERE coalesce(m.kind, '') <> 'MERCHANT' } THEN 2
+  END AS distance_to_known_fraud,
+  CASE WHEN customer_payee
+       THEN COUNT { MATCH (payee)-[:TRANSFERRED_TO]-(n:Account {fraud_flag: true})
+                    RETURN DISTINCT n }
+       ELSE 0 END AS fraud_neighbor_count
+"""
+
+
+def known_fraud(
+    driver: Driver, events: list[TransactionEvent], database: str | None = None
+) -> list[dict[str, float]]:
+    """Proximity of each transaction to accounts confirmed as fraud, in event order.
+
+    Per event, only meaningful values are present: ``distance_to_known_fraud``
+    (0 = the payee itself was confirmed, 1 or 2 hops through customer
+    accounts), ``fraud_neighbor_count`` (confirmed accounts the payee traded
+    with) and ``payer_confirmed_fraud`` (the paying account was confirmed: a
+    mule moving money on). Merchant payees are skipped (hubs). While no
+    account has been confirmed, one indexed lookup answers for the batch.
+    """
+    if not events:
+        return []
+    records, _, _ = driver.execute_query(_ANY_CONFIRMED, database_=database, routing_="r")
+    if not records[0]["any"]:
+        return [{} for _ in events]
+    rows = [{**_flow(e), "i": i} for i, e in enumerate(events)]
+    records, _, _ = driver.execute_query(_KNOWN_FRAUD, rows=rows, database_=database, routing_="r")
+    out: list[dict[str, float]] = [{} for _ in events]
+    for record in records:
+        values: dict[str, float] = {}
+        if record["distance_to_known_fraud"] is not None:
+            values["distance_to_known_fraud"] = float(record["distance_to_known_fraud"])
+        if record["fraud_neighbor_count"]:
+            values["fraud_neighbor_count"] = float(record["fraud_neighbor_count"])
+        if record["payer_confirmed_fraud"]:
+            values["payer_confirmed_fraud"] = 1.0
+        out[record["i"]] = values
+    return out

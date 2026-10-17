@@ -190,6 +190,14 @@ Grafana `:3000`.
       Offline builds moved to a disposable `redis-offline` service
       (`OnlineFeatureStore(cache_results=False)`); `ml build-features` refuses
       to run without it. Polars added. Tests: 101 unit, 24 integration
+- [x] **Spec completion + review fixes (2026-10-17):** analyst feedback loop
+      (ADR-033); `POST /models/predict` (shared `scoring.engine.decide`);
+      hot reload of `config/risk.yaml`; Slack-ready webhook text; scorer
+      stage latency, store write latency and alert-rate panels (dashboard
+      generator `infra/grafana/build_dashboard.py`); bug fixes: UTC event
+      times, nginx re-resolution, LLM answer parsing, 503 on store outages,
+      simulate validation, SSE robustness, lag gauges, replay ids,
+      configurable host ports. Tests: 151 unit, 34 integration
 - [x] **Phase 11, observability + streaming benchmark:** Grafana dashboard
       *FraudX pipeline* provisioned (20 panels: health, latency, risk,
       API/Kafka); `python -m fraudx.bench_stream` / `make bench-stream`:
@@ -602,6 +610,32 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
 - **Impact:** `fraudx.ml`; the scorer (Phase 8) loads the active registry
   version with `FraudModel`.
 
+### ADR-033: Analyst feedback loop: confirmations in the graph, a measured MEDIUM rule
+- **Decision:** `PATCH /fraud/{tx}` records the decision in Neo4j: a
+  confirmation adds the transaction id to the payee account's
+  `fraud_sources` (`fraud_flag` = non-empty), any other decision removes it.
+  The scorer reads, per batch, `distance_to_known_fraud` (0–2 hops through
+  customer accounts), `fraud_neighbor_count` and `payer_confirmed_fraud`.
+  One rule, `payee_confirmed_fraud` (MEDIUM): a first TRANSFER from a payer
+  to a confirmed account. The rest is evidence.
+- **Reason:** spec §11.3 lists `distance_to_known_fraud` /
+  `fraud_neighbor_count`, and §13 "connected accounts have previous
+  suspicious activity"; nothing set the `fraud_flag` the schema indexed.
+  Analyst decisions are not in any training set, so they are rules, not
+  model features (no retraining, no label leak).
+- **Measured** (synthetic demo / training, every earlier fraud confirmed):
+  payment to a confirmed account 0.20 / 0.11 precision; first payment 0.24 /
+  0.16; **first TRANSFER 0.58 / 0.58**, catching 63 % of fraud to customer
+  accounts (12 of 18 app_scam on the demo); payer confirmed 0.47 / 0.36;
+  one hop away 0.00 / 0.00. HIGH needs ≥ 0.85, so the rule is MEDIUM.
+  Live check (2026-10-17): confirming a takeover case marked the mule; an
+  unrelated customer's first transfer to it scored 27 HIGH with the rule;
+  reverting the decision removed the mark.
+- **Trade-offs:** precision is bounded by the analysts' accuracy; a decision
+  that fails half-way (503) is retried by sending it again (idempotent).
+- **Impact:** `storage/feedback.py`, `graph_features.known_fraud`,
+  `scoring/{rules,engine}.py`, `explain/template.py`, `api/routes/fraud.py`.
+
 ### ADR-032: Dashboard: React + TypeScript behind nginx, SSE for the live stream, analyst-confirmed precision
 - **Decision:** A Vite React TypeScript app with React as the only runtime
   dependency (charts and graph in hand-written SVG), built into an nginx image
@@ -930,6 +964,9 @@ Format: Decision / Reason / Advantages / Trade-offs / Impact.
   bind empty collections as UNSET.
 * `git stash -u` during a long background job removes files a *new* process
   of that job may import; verify a commit in a separate `git worktree`.
+* Measure a rule under ideal conditions before shipping it: "payment to a
+  confirmed mule" sounded decisive but was 0.20 precise (mules receive their
+  contacts' money); the first-TRANSFER variant kept every catch at 0.58.
 * `consume(n, timeout)` blocks until n messages **or** the timeout: a 1 s
   timeout added up to a second per batch stage at low traffic. Measure end
   to end (`make bench-stream`) before trusting per-stage numbers.

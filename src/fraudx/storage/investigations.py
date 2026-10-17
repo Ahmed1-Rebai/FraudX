@@ -48,6 +48,16 @@ class Investigations:
         )
         return _out(doc)
 
+    def set_feedback(
+        self, transaction_id: str, feedback: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Keep what the decision changed in the graph (None: nothing to mark)."""
+        doc = self.collection.find_one_and_update(
+            {"_id": transaction_id}, {"$set": {"feedback": feedback}},
+            return_document=ReturnDocument.AFTER,
+        )  # fmt: skip
+        return _out(doc)
+
     def counts(self) -> dict[str, int]:
         """Number of investigations per status."""
         rows = self.collection.aggregate([{"$group": {"_id": "$status", "n": {"$sum": 1}}}])

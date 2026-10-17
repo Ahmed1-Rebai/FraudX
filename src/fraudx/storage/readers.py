@@ -116,6 +116,7 @@ LIMIT $limit
 _COUNTERPARTIES = """
 MATCH (:Customer {id: $id})-[:OWNS]->(a:Account)-[t:TRANSFERRED_TO]-(p:Account)
 RETURN a.id AS account, p.id AS counterparty, p.kind AS kind,
+       coalesce(p.fraud_flag, false) AS confirmed_fraud,
        CASE WHEN startNode(t) = a THEN 'out' ELSE 'in' END AS direction,
        t.count AS count, round(t.total_amount, 2) AS total_amount, t.last_seen AS last_seen
 ORDER BY total_amount DESC

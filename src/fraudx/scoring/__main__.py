@@ -14,17 +14,16 @@ from fraudx.core.config import (
     RedisSettings,
     WorkerSettings,
     get_app_settings,
-    get_risk_config,
+    get_risk_config_watcher,
 )
 from fraudx.core.logging import configure_logging
 from fraudx.core.topics import TRANSACTIONS_FEATURES
 from fraudx.messaging.consumer import StreamWorker
 from fraudx.messaging.producer import EventProducer
-from fraudx.ml import registry
-from fraudx.scoring.detectors import SIGNAL_MODELS, load_active
-from fraudx.scoring.scorer import ActiveModels, Scorer
+from fraudx.scoring.detectors import ActiveModels, load_active, registry_ids
+from fraudx.scoring.scorer import Scorer
 from fraudx.storage import clients
-from fraudx.storage.graph_features import graph_features
+from fraudx.storage.graph_features import graph_features, known_fraud
 
 
 def main() -> int:
@@ -40,22 +39,16 @@ def main() -> int:
     driver = clients.neo4j_driver(Neo4jSettings(), timeout_s=10)
     redis = clients.redis_client(RedisSettings())
 
-    def active_ids() -> dict[str, str]:
-        return {
-            name: doc["_id"]
-            for name in SIGNAL_MODELS.values()
-            if (doc := registry.active(db, name)) is not None
-        }
-
     producer = EventProducer(kafka, "scorer")
     worker = StreamWorker(
         name="scorer",
         topics=[TRANSACTIONS_FEATURES],
         handler=None,
         batch_handler=Scorer(
-            models=ActiveModels(active_ids, partial(load_active, db)),
+            models=ActiveModels(partial(registry_ids, db), partial(load_active, db)),
             graph_features=partial(graph_features, driver),
-            config=get_risk_config(),
+            known_fraud=partial(known_fraud, driver),
+            config=get_risk_config_watcher().get,
             producer=producer,
             redis=redis,
         ),

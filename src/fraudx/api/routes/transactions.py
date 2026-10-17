@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, ValidationError
 
 from fraudx.api.stores import Stores, get_stores
-from fraudx.core.schemas import Location, TransactionEvent, TransactionType
+from fraudx.core.schemas import Balances, Location, PaymentMethod, TransactionEvent, TransactionType
 from fraudx.core.topics import TRANSACTIONS_RAW
 from fraudx.messaging.consumer import PermanentError
 from fraudx.streaming.processor import validate
@@ -44,7 +44,7 @@ class Transaction(BaseModel):
 
 
 class SimulatedTransaction(BaseModel):
-    """A transaction to inject into the live pipeline (id and time are set by the API)."""
+    """A transaction for the live pipeline or a prediction (id and time are set by the API)."""
 
     customer_id: str = Field(min_length=1, max_length=64, examples=["C-000322"])
     source_account: str = Field(min_length=1, max_length=64, examples=["A-000322"])
@@ -54,6 +54,27 @@ class SimulatedTransaction(BaseModel):
     device_id: str | None = Field(default=None, max_length=64, examples=["DEV-0199a04abb"])
     ip_address: str | None = None
     location: Location | None = None
+    balances: Balances | None = None
+    payment_method: PaymentMethod | None = None
+
+
+def build_event(body: SimulatedTransaction, id_prefix: str) -> TransactionEvent:
+    """The event contract and the pipeline's own business rules, or 422."""
+    try:
+        event = TransactionEvent(
+            transaction_id=f"{id_prefix}-{uuid.uuid4().hex[:12]}",
+            event_time=datetime.now(UTC),
+            **body.model_dump(exclude_none=True),
+        )
+        validate(event)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=exc.errors(include_url=False, include_input=False, include_context=False),
+        ) from exc
+    except PermanentError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return event
 
 
 class Accepted(BaseModel):
@@ -76,20 +97,7 @@ def simulate(body: SimulatedTransaction, stores: Annotated[Stores, Depends(get_s
 
     Read the outcome a moment later with ``GET /transactions/{id}``.
     """
-    try:  # the event contract and the pipeline's own business rules, before publishing
-        event = TransactionEvent(
-            transaction_id=f"SIM-{uuid.uuid4().hex[:12]}",
-            event_time=datetime.now(UTC),
-            **body.model_dump(exclude_none=True),
-        )
-        validate(event)
-    except ValidationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=exc.errors(include_url=False, include_input=False, include_context=False),
-        ) from exc
-    except PermanentError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    event = build_event(body, "SIM")
     producer = stores.producer()
     producer.send_model(TRANSACTIONS_RAW, event, key=event.partition_key)
     producer.flush(5)
