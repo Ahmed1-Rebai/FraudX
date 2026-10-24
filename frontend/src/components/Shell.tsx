@@ -8,7 +8,6 @@ import {
   Network,
   Server,
   ShieldAlert,
-  ShieldCheck,
   Sun,
   type LucideIcon,
 } from "lucide-react";
@@ -42,13 +41,18 @@ export function Sidebar({
   return (
     <aside className="sidebar">
       <div className="brand">
-        <span className="brand-mark">
-          <ShieldCheck size={18} aria-hidden />
-        </span>
-        <div>
-          <div className="brand-name">FraudX</div>
-          <div className="brand-tag">Real-time fraud intelligence</div>
-        </div>
+        <a href="#/overview" className="brand-link" title="FraudX · Fraud & Risk Intelligence">
+          <img
+            src="/logo-full-darkmode.png"
+            alt="FraudX - Fraud & Risk Intelligence"
+            className="brand-logo"
+          />
+          <img
+            src="/logo-mark-darkmode.png"
+            alt="FraudX"
+            className="brand-logo-mark"
+          />
+        </a>
       </div>
       <div className="nav-label">Monitor</div>
       {NAV.map(({ id, label, icon: Icon }) => (

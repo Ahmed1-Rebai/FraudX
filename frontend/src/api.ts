@@ -99,6 +99,15 @@ export interface Feedback {
   confirmations: number;
 }
 
+export interface PrecedentMatch {
+  transaction_id: string;
+  status: string;
+  similarity: number;
+  risk_score: number;
+  summary?: string | null;
+  analyst_note?: string | null;
+}
+
 export interface Investigation {
   transaction_id: string;
   customer_id: string;
@@ -118,6 +127,7 @@ export interface Investigation {
   feedback?: Feedback | null;
   models?: Record<string, string>;
   evidence?: Record<string, unknown>;
+  precedents?: PrecedentMatch[];
 }
 
 export interface ExplanationView {
@@ -125,6 +135,7 @@ export interface ExplanationView {
   summary: string;
   generator: string;
   reasons: { text: string; evidence: Record<string, unknown> }[];
+  precedents?: PrecedentMatch[];
 }
 
 export interface Device {

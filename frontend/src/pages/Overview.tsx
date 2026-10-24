@@ -1,7 +1,14 @@
-import { Activity, BadgeCheck, Inbox, Siren, type LucideIcon } from "lucide-react";
+import { Activity, BadgeCheck, Cpu, Database, Inbox, Siren, type LucideIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { api, type Level, type Stage } from "../api";
-import { AreaChart, LevelColumns, Sparkline } from "../components/charts";
+import {
+  AreaChart,
+  LevelColumns,
+  ModelEnsembleChart,
+  PipelineWaterfallChart,
+  Sparkline,
+  StorageBenchmarkChart,
+} from "../components/charts";
 import { LEVEL, LevelIcon, RiskBadge } from "../components/Risk";
 import { Topbar } from "../components/Shell";
 import { Card, CardHeader, Empty, ErrorBanner, Segmented, Skeleton, SkeletonRows } from "../components/ui";
@@ -35,6 +42,7 @@ function stageTone(s: Stage): string {
 export function Overview({ go }: { go: (hash: string) => void }) {
   const overview = usePolling(api.overview, 10_000);
   const data = overview.data;
+  const [subView, setSubView] = useState<"operations" | "benchmarks" | "ensemble">("operations");
   const [day, setDay] = useState(todayUtc());
   const [feedLevel, setFeedLevel] = useState<"ALL" | Level>("ALL");
   const feed = usePolling(() => api.alerts(day, feedLevel === "ALL" ? undefined : feedLevel), 30_000, [day, feedLevel]);
@@ -69,108 +77,184 @@ export function Overview({ go }: { go: (hash: string) => void }) {
                foot={decided ? `${confirmed} confirmed fraud of ${decided} decided cases` : "no decided cases yet"} />
         </div>
 
-        <div className="grid grid-main">
-          <Card>
-            <CardHeader title="Throughput" hint="Transactions scored per second, last 30 minutes" />
-            <div className="card-body">
-              {data ? <AreaChart points={data.throughput} unit="tx/s" windowS={1800} /> : <Skeleton height={220} />}
-            </div>
-          </Card>
-          <Card>
-            <CardHeader title="Risk levels" hint={`Share of scored transactions, 24 h${bands}`} />
-            <div className="card-body">
-              {!data ? <SkeletonRows rows={3} /> : (
-                <>
-                  {(["HIGH", "MEDIUM", "LOW"] as Level[]).map((level) => {
-                    const n = data.by_level[level] ?? 0;
-                    const share = total ? n / total : 0;
-                    return (
-                      <div key={level} className="level-row">
-                        <span className="row" style={{ gap: 8, fontWeight: 550 }}>
-                          <LevelIcon level={level} /> {LEVEL[level].label}
-                        </span>
-                        <div className="bar-track">
-                          <div className="bar-fill" style={{ width: `${Math.max(share * 100, n ? 1 : 0)}%`, background: LEVEL[level].color }} />
-                        </div>
-                        <span className="num" style={{ textAlign: "right", fontWeight: 600 }}>{fmt.int(n)}</span>
-                        <span className="num muted" style={{ textAlign: "right" }}>{fmt.pct(share, share && share < 0.01 ? 2 : 0)}</span>
-                      </div>
-                    );
-                  })}
-                  <div className="stat-grid" style={{ marginTop: 14 }}>
-                    <div className="stat"><div className="label">Average score</div>
-                      <div className="value">{fmt.decimal(data.avg_risk_score)}<span className="muted" style={{ fontSize: 12, fontWeight: 500 }}> / 100</span></div></div>
-                    <div className="stat"><div className="label">Alert threshold</div>
-                      <div className="value">{data.alert_threshold == null ? "–" : `≥ ${data.alert_threshold}`}</div></div>
-                  </div>
-                </>
-              )}
-            </div>
-          </Card>
+        <div className="subnav-tabs">
+          <button
+            type="button"
+            className={`subnav-tab ${subView === "operations" ? "active" : ""}`}
+            onClick={() => setSubView("operations")}
+          >
+            <Activity size={15} /> Live Operations
+          </button>
+          <button
+            type="button"
+            className={`subnav-tab ${subView === "benchmarks" ? "active" : ""}`}
+            onClick={() => setSubView("benchmarks")}
+          >
+            <Database size={15} /> Storage & Architecture <span className="subnav-badge">NoSQL</span>
+          </button>
+          <button
+            type="button"
+            className={`subnav-tab ${subView === "ensemble" ? "active" : ""}`}
+            onClick={() => setSubView("ensemble")}
+          >
+            <Cpu size={15} /> AI Ensemble & SLA <span className="subnav-badge">PR-AUC 0.851</span>
+          </button>
         </div>
 
-        <div className="grid grid-main">
-          <Card>
-            <CardHeader title="Medium and high-risk transactions" hint="Per minute, last 60 minutes" />
-            <div className="card-body">
-              {data ? <LevelColumns series={data.alerts_series} /> : <Skeleton height={240} />}
-            </div>
-          </Card>
-          <Card>
-            <CardHeader title="Pipeline" hint="Per worker: throughput, backlog, p95 latency" />
-            <div className="card-body">
-              {!data ? <SkeletonRows rows={6} /> : data.stages.map((s) => (
-                <div key={s.worker} className="stage">
-                  <span className="dot" style={{ background: stageTone(s) }} />
-                  <span className="name">{fmt.stage(s.worker)}</span>
-                  <span className="meta">
-                    {s.messages_per_s == null ? "idle" : `${fmt.decimal(s.messages_per_s)} msg/s`}
-                    {" · lag "}{fmt.int(s.lag)}
-                    {s.latency_p95_s != null && ` · ${s.latency_p95_s < 1 ? `${Math.round(s.latency_p95_s * 1000)} ms` : `${s.latency_p95_s.toFixed(1)} s`}`}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </Card>
-        </div>
+        {subView === "benchmarks" && (
+          <div style={{ display: "grid", gap: 18 }}>
+            <Card>
+              <CardHeader
+                title="Polyglot NoSQL Storage Tiering & Benchmarks"
+                hint="Redis Feature Store vs MongoDB Documents/Vectors vs Cassandra Ledger vs Neo4j Graph"
+              />
+              <div className="card-body">
+                <StorageBenchmarkChart />
+              </div>
+            </Card>
 
-        <Card>
-          <CardHeader title="Alert feed" hint="Medium and high-risk transactions of the day, newest first (Cassandra)">
-            <Segmented label="Risk level" value={feedLevel} onChange={setFeedLevel}
-                       options={[{ value: "ALL", label: "All" }, { value: "HIGH", label: "High" }, { value: "MEDIUM", label: "Medium" }]} />
-            <input className="input" type="date" value={day} aria-label="Day (UTC)" onChange={(e) => setDay(e.target.value)} />
-          </CardHeader>
-          <div className="card-body" style={{ paddingLeft: 6, paddingRight: 6 }}>
-            {feed.loading && !feed.data ? <div style={{ padding: "0 14px" }}><SkeletonRows rows={6} /></div>
-              : !feed.data?.events.length ? <Empty title={`No risky transactions on ${fmt.date(day)}`}>
-                  Pick another day, or stream traffic with <span className="mono">make replay</span>.
-                </Empty>
-              : (
-                <div className="table-wrap" style={{ maxHeight: 460, overflowY: "auto" }}>
-                  <table className="table">
-                    <thead><tr>
-                      <th>Time (UTC)</th><th>Transaction</th><th>Customer</th><th>Type</th>
-                      <th className="right">Amount</th><th>Risk</th><th>Rules</th>
-                    </tr></thead>
-                    <tbody>
-                      {feed.data.events.map((e) => (
-                        <tr key={e.transaction_id} className={`clickable ${e.risk_level.toLowerCase()}`}
-                            onClick={() => go(`#/case/${encodeURIComponent(e.transaction_id)}`)}>
-                          <td className="num">{fmt.time(e.event_time)}</td>
-                          <td className="mono">{e.transaction_id}</td>
-                          <td className="mono">{e.customer_id}</td>
-                          <td>{e.transaction_type}</td>
-                          <td className="right num">{fmt.money(e.amount)}</td>
-                          <td><RiskBadge level={e.risk_level} score={e.risk_score} /></td>
-                          <td>{(e.rule_hits ?? []).map((r) => <span key={r} className="chip rule">{r}</span>)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+            <Card>
+              <CardHeader
+                title="Streaming Pipeline SLA Waterfall"
+                hint="Stage-by-stage latency profile vs 150 ms Card Network Authorization budget"
+              />
+              <div className="card-body">
+                <PipelineWaterfallChart />
+              </div>
+            </Card>
           </div>
-        </Card>
+        )}
+
+        {subView === "ensemble" && (
+          <div style={{ display: "grid", gap: 18 }}>
+            <Card>
+              <CardHeader
+                title="Calibrated Multi-Model AI Ensemble"
+                hint="Supervised LightGBM + Isolation Forest + Neo4j Graph Cycles + Vector Precedents Lift"
+              />
+              <div className="card-body">
+                <ModelEnsembleChart />
+              </div>
+            </Card>
+
+            <Card>
+              <CardHeader
+                title="End-to-End Real-Time Pipeline SLA"
+                hint="Sub-150ms authorization waterfall and resource consumption"
+              />
+              <div className="card-body">
+                <PipelineWaterfallChart />
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {subView === "operations" && (
+          <>
+            <div className="grid grid-main">
+              <Card>
+                <CardHeader title="Throughput" hint="Transactions scored per second, last 30 minutes" />
+                <div className="card-body">
+                  {data ? <AreaChart points={data.throughput} unit="tx/s" windowS={1800} /> : <Skeleton height={220} />}
+                </div>
+              </Card>
+              <Card>
+                <CardHeader title="Risk levels" hint={`Share of scored transactions, 24 h${bands}`} />
+                <div className="card-body">
+                  {!data ? <SkeletonRows rows={3} /> : (
+                    <>
+                      {(["HIGH", "MEDIUM", "LOW"] as Level[]).map((level) => {
+                        const n = data.by_level[level] ?? 0;
+                        const share = total ? n / total : 0;
+                        return (
+                          <div key={level} className="level-row">
+                            <span className="row" style={{ gap: 8, fontWeight: 550 }}>
+                              <LevelIcon level={level} /> {LEVEL[level].label}
+                            </span>
+                            <div className="bar-track">
+                              <div className="bar-fill" style={{ width: `${Math.max(share * 100, n ? 1 : 0)}%`, background: LEVEL[level].color }} />
+                            </div>
+                            <span className="num" style={{ textAlign: "right", fontWeight: 600 }}>{fmt.int(n)}</span>
+                            <span className="num muted" style={{ textAlign: "right" }}>{fmt.pct(share, share && share < 0.01 ? 2 : 0)}</span>
+                          </div>
+                        );
+                      })}
+                      <div className="stat-grid" style={{ marginTop: 14 }}>
+                        <div className="stat"><div className="label">Average score</div>
+                          <div className="value">{fmt.decimal(data.avg_risk_score)}<span className="muted" style={{ fontSize: 12, fontWeight: 500 }}> / 100</span></div></div>
+                        <div className="stat"><div className="label">Alert threshold</div>
+                          <div className="value">{data.alert_threshold == null ? "–" : `≥ ${data.alert_threshold}`}</div></div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </Card>
+            </div>
+
+            <div className="grid grid-main">
+              <Card>
+                <CardHeader title="Medium and high-risk transactions" hint="Per minute, last 60 minutes" />
+                <div className="card-body">
+                  {data ? <LevelColumns series={data.alerts_series} /> : <Skeleton height={240} />}
+                </div>
+              </Card>
+              <Card>
+                <CardHeader title="Pipeline" hint="Per worker: throughput, backlog, p95 latency" />
+                <div className="card-body">
+                  {!data ? <SkeletonRows rows={6} /> : data.stages.map((s) => (
+                    <div key={s.worker} className="stage">
+                      <span className="dot" style={{ background: stageTone(s) }} />
+                      <span className="name">{fmt.stage(s.worker)}</span>
+                      <span className="meta">
+                        {s.messages_per_s == null ? "idle" : `${fmt.decimal(s.messages_per_s)} msg/s`}
+                        {" · lag "}{fmt.int(s.lag)}
+                        {s.latency_p95_s != null && ` · ${s.latency_p95_s < 1 ? `${Math.round(s.latency_p95_s * 1000)} ms` : `${s.latency_p95_s.toFixed(1)} s`}`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </div>
+
+            <Card>
+              <CardHeader title="Alert feed" hint="Medium and high-risk transactions of the day, newest first (Cassandra)">
+                <Segmented label="Risk level" value={feedLevel} onChange={setFeedLevel}
+                           options={[{ value: "ALL", label: "All" }, { value: "HIGH", label: "High" }, { value: "MEDIUM", label: "Medium" }]} />
+                <input className="input" type="date" value={day} aria-label="Day (UTC)" onChange={(e) => setDay(e.target.value)} />
+              </CardHeader>
+              <div className="card-body" style={{ paddingLeft: 6, paddingRight: 6 }}>
+                {feed.loading && !feed.data ? <div style={{ padding: "0 14px" }}><SkeletonRows rows={6} /></div>
+                  : !feed.data?.events.length ? <Empty title={`No risky transactions on ${fmt.date(day)}`}>
+                      Pick another day, or stream traffic with <span className="mono">make replay</span>.
+                    </Empty>
+                  : (
+                    <div className="table-wrap" style={{ maxHeight: 460, overflowY: "auto" }}>
+                      <table className="table">
+                        <thead><tr>
+                          <th>Time (UTC)</th><th>Transaction</th><th>Customer</th><th>Type</th>
+                          <th className="right">Amount</th><th>Risk</th><th>Rules</th>
+                        </tr></thead>
+                        <tbody>
+                          {feed.data.events.map((e) => (
+                            <tr key={e.transaction_id} className={`clickable ${e.risk_level.toLowerCase()}`}
+                                onClick={() => go(`#/case/${encodeURIComponent(e.transaction_id)}`)}>
+                              <td className="num">{fmt.time(e.event_time)}</td>
+                              <td className="mono">{e.transaction_id}</td>
+                              <td className="mono">{e.customer_id}</td>
+                              <td>{e.transaction_type}</td>
+                              <td className="right num">{fmt.money(e.amount)}</td>
+                              <td><RiskBadge level={e.risk_level} score={e.risk_score} /></td>
+                              <td>{(e.rule_hits ?? []).map((r) => <span key={r} className="chip rule">{r}</span>)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+              </div>
+            </Card>
+          </>
+        )}
       </div>
     </>
   );

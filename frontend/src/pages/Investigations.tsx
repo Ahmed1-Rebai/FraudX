@@ -1,13 +1,10 @@
 import {
   ArrowLeft,
-  Check,
   FileSearch,
   Network as NetworkIcon,
   RotateCcw,
-  ShieldAlert,
   Sparkles,
   Waypoints,
-  X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -20,7 +17,7 @@ import {
   type Status,
   type Transaction,
 } from "../api";
-import { Meter, ScoreRing } from "../components/charts";
+import { Meter, PrecedentCard, ScoreRing } from "../components/charts";
 import { RiskBadge, StatusPill } from "../components/Risk";
 import { Topbar } from "../components/Shell";
 import { useToast } from "../components/Toast";
@@ -198,19 +195,19 @@ function CaseView({ tx, onBack, onChanged }: { tx: string; onBack: () => void; o
                    onChange={(e) => setNote(e.target.value)} aria-label="Analyst note" />
             <button type="button" className="btn danger" disabled={saving != null}
                     aria-pressed={inv.status === "CONFIRMED_FRAUD"} onClick={() => decide("CONFIRMED_FRAUD")}>
-              <ShieldAlert size={15} /> Confirm fraud
+              <span className="btn-dot danger" /> Confirm fraud
             </button>
             <button type="button" className="btn" disabled={saving != null}
                     aria-pressed={inv.status === "FALSE_POSITIVE"} onClick={() => decide("FALSE_POSITIVE")}>
-              <Check size={15} /> False positive
+              <span className="btn-dot good" /> False positive
             </button>
             <button type="button" className="btn ghost" disabled={saving != null}
                     aria-pressed={inv.status === "DISMISSED"} onClick={() => decide("DISMISSED")}>
-              <X size={15} /> Dismiss
+              <span className="btn-dot neutral" /> Dismiss
             </button>
             {inv.status !== "OPEN" && (
               <button type="button" className="btn ghost" disabled={saving != null} onClick={() => decide("OPEN")}>
-                <RotateCcw size={15} /> Reopen
+                <RotateCcw size={14} /> Reopen
               </button>
             )}
           </div>
@@ -234,32 +231,51 @@ function CaseView({ tx, onBack, onChanged }: { tx: string; onBack: () => void; o
           This transaction scored below the alert threshold, so no case was opened and no explanation was written.
         </div>
       ) : (
-        <Card>
-          <CardHeader title="Why it was flagged" icon={Sparkles}
-                      hint={why ? `Written by the ${generatorLabel(why.generator)}; every reason cites stored evidence` : undefined} />
-          <div className="card-body">
-            {!why ? <SkeletonRows rows={4} /> : (
-              <>
-                <div className={`callout ${level === "HIGH" ? "critical" : level === "MEDIUM" ? "warning" : ""}`}>{why.summary}</div>
-                <ol className="reasons" style={{ marginTop: 16 }}>
-                  {why.reasons.map((r, i) => (
-                    <li key={i}>
-                      <span className="idx">{i + 1}</span>
-                      <div>
-                        {r.text}
-                        <div className="evidence">
-                          {Object.entries(r.evidence).map(([k, v]) => (
-                            <span key={k} className="chip"><b>{k}</b>{value(v)}</span>
-                          ))}
+        <>
+          <Card>
+            <CardHeader title="Why it was flagged" icon={Sparkles}
+                        hint={why ? `Written by the ${generatorLabel(why.generator)}; every reason cites stored evidence` : undefined} />
+            <div className="card-body">
+              {!why ? <SkeletonRows rows={4} /> : (
+                <>
+                  <div className={`callout ${level === "HIGH" ? "critical" : level === "MEDIUM" ? "warning" : ""}`}>{why.summary}</div>
+                  <ol className="reasons" style={{ marginTop: 16 }}>
+                    {why.reasons.map((r, i) => (
+                      <li key={i}>
+                        <span className="idx">{i + 1}</span>
+                        <div>
+                          {r.text}
+                          <div className="evidence">
+                            {Object.entries(r.evidence).map(([k, v]) => (
+                              <span key={k} className="chip"><b>{k}</b>{value(v)}</span>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    </li>
+                      </li>
+                    ))}
+                  </ol>
+                </>
+              )}
+            </div>
+          </Card>
+
+          {((inv?.precedents && inv.precedents.length > 0) || (why?.precedents && why.precedents.length > 0)) && (
+            <Card>
+              <CardHeader
+                title="Case-law precedents"
+                icon={FileSearch}
+                hint="Historically similar investigations retrieved via MongoDB Vector Cosine Search"
+              />
+              <div className="card-body">
+                <div className="precedents-list">
+                  {(inv?.precedents ?? why?.precedents ?? []).map((p) => (
+                    <PrecedentCard key={p.transaction_id} precedent={p} />
                   ))}
-                </ol>
-              </>
-            )}
-          </div>
-        </Card>
+                </div>
+              </div>
+            </Card>
+          )}
+        </>
       )}
 
       <div className="grid grid-2" style={{ gap: 16 }}>
