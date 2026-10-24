@@ -30,6 +30,7 @@ from pymongo.database import Database
 from fraudx.core.config import RiskConfig
 from fraudx.core.schemas import ScoredTransaction
 from fraudx.explain import evidence as evidence_mod
+from fraudx.explain.precedent import enrich_evidence_with_precedent, find_precedents
 from fraudx.explain.template import Explanation
 from fraudx.messaging.consumer import PermanentError, decode
 
@@ -44,7 +45,11 @@ class Explainer(Protocol):
 
 
 def investigation(
-    scored: ScoredTransaction, evidence: dict[str, Any], explanation: Explanation, now: datetime
+    scored: ScoredTransaction,
+    evidence: dict[str, Any],
+    explanation: Explanation,
+    now: datetime,
+    precedents: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     risk = scored.risk
     return {
@@ -68,6 +73,7 @@ def investigation(
             "dropped_ungrounded": explanation.dropped,
             "created_at": now,
         },
+        "precedents": precedents or [],
         "status": "OPEN",
         "created_at": now,
         "updated_at": now,
@@ -127,12 +133,30 @@ class AlertHandler:
         new = [a for tx, a in alerts.items() if tx not in existing]
         profiles = {d["_id"]: d for d in self.db.customers.find(
             {"_id": {"$in": list({a.event.customer_id for a in new})}})}  # fmt: skip
+        cursor = self.db.investigations.find(
+            {"status": {"$in": ["CONFIRMED_FRAUD", "FALSE_POSITIVE"]}},
+            {
+                "_id": 1,
+                "status": 1,
+                "risk": 1,
+                "evidence": 1,
+                "explanation.summary": 1,
+                "analyst_note": 1,
+            },
+        )
+        if hasattr(cursor, "sort"):
+            cursor = cursor.sort("updated_at", -1)
+        if hasattr(cursor, "limit"):
+            cursor = cursor.limit(50)
+        resolved_cases = list(cursor)
         now, config = self._now(), self._config()
         docs = []
         for scored in new:
             evidence = evidence_mod.build(scored, config, profiles.get(scored.event.customer_id))
+            precedents = find_precedents(evidence, resolved_cases, limit=3)
+            enrich_evidence_with_precedent(evidence, precedents)
             explanation = self.explainer.explain(evidence)
-            docs.append(investigation(scored, evidence, explanation, now))
+            docs.append(investigation(scored, evidence, explanation, now, precedents=precedents))
         if docs:
             self.db.investigations.bulk_write(
                 [UpdateOne({"_id": d["_id"]}, {"$setOnInsert": d}, upsert=True) for d in docs],

@@ -108,6 +108,7 @@ createCollection("investigations", {
       },
     },
     status: { enum: ["OPEN", "CONFIRMED_FRAUD", "FALSE_POSITIVE", "DISMISSED"] },
+    precedents: { bsonType: "array" },
     created_at: { bsonType: "date" },
     updated_at: { bsonType: "date" },
   },

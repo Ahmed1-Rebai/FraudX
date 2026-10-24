@@ -76,6 +76,22 @@ def _burst(e: dict[str, Any]) -> Reason | None:
     )  # fmt: skip
 
 
+def _precedent(e: dict[str, Any]) -> Reason | None:
+    """Historical case-law precedent match with high behavioral similarity."""
+    top_id = e.get("precedent.top_id")
+    sim = e.get("precedent.top_similarity")
+    status = e.get("precedent.top_status")
+    if not top_id or sim is None or sim < 0.75 or not status:
+        return None
+    label = "confirmed fraud" if status == "CONFIRMED_FRAUD" else "false positive"
+    pct = round(sim * 100)
+    note = f" (analyst: '{e['precedent.top_note']}')" if e.get("precedent.top_note") else ""
+    return Reason(
+        f"Behavioral similarity ({pct}%) to {label} case {top_id}{note}.",
+        ("precedent.top_id", "precedent.top_similarity", "precedent.top_status"),
+    )
+
+
 def _payee_ring(e: dict[str, Any]) -> Reason | None:
     n = e.get("graph.payee_owner_ring_size", 0)
     if n < 1:
@@ -111,7 +127,12 @@ def _new_payee(e: dict[str, Any]) -> Reason | None:
 
 def _amount(e: dict[str, Any]) -> Reason | None:
     ratio = e.get("features.amount_to_mean_ratio")
-    if ratio is None or ratio < 3:
+    if (
+        ratio is None
+        or ratio < 3
+        or "features.cust_amount_mean" not in e
+        or "transaction.currency" not in e
+    ):
         return None
     return Reason(
         f"The amount is {ratio:.1f}x the customer's average "
@@ -171,7 +192,7 @@ def _signal(e: dict[str, Any]) -> Reason | None:
 
 RULES: tuple[Rule, ...] = (
     _known_fraud,
-    _takeover, _burst, _payee_ring, _customer_ring, _fan_in, _amount, _drain, _velocity,
+    _takeover, _burst, _precedent, _payee_ring, _customer_ring, _fan_in, _amount, _drain, _velocity,
     _new_payee, _new_context, _shared_device, _signal,
 )  # fmt: skip
 

@@ -57,6 +57,17 @@ class Feedback(BaseModel):
     confirmations: int
 
 
+class PrecedentMatch(BaseModel):
+    """Similar historical case retrieved to ground investigations and explanations."""
+
+    transaction_id: str
+    status: str
+    similarity: float
+    risk_score: int = 0
+    summary: str | None = None
+    analyst_note: str | None = None
+
+
 class InvestigationSummary(BaseModel):
     transaction_id: str
     customer_id: str
@@ -73,6 +84,7 @@ class InvestigationSummary(BaseModel):
 class Investigation(InvestigationSummary):
     models: dict[str, str] = {}
     evidence: dict[str, Any]
+    precedents: list[PrecedentMatch] = []
 
 
 class CitedReason(BaseModel):
@@ -85,6 +97,7 @@ class ExplanationView(BaseModel):
     summary: str
     generator: str
     reasons: list[CitedReason]
+    precedents: list[PrecedentMatch] = []
 
 
 class Decision(BaseModel):
@@ -160,6 +173,7 @@ def get_explanation(transaction_id: str, stores: StoresDep):
         "summary": explanation["summary"],
         "generator": explanation["generator"],
         "reasons": reasons,
+        "precedents": doc.get("precedents", []),
     }
 
 
