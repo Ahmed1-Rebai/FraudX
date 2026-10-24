@@ -92,6 +92,22 @@ def _precedent(e: dict[str, Any]) -> Reason | None:
     )
 
 
+def _cycle(e: dict[str, Any]) -> Reason | None:
+    """Circular money routing loop (layering/round-tripping pattern)."""
+    if not e.get("graph.has_transfer_cycle") and not e.get("rules.circular_transfer_pattern"):
+        return None
+    keys = (
+        ("graph.has_transfer_cycle",)
+        if e.get("graph.has_transfer_cycle")
+        else ("rules.circular_transfer_pattern",)
+    )
+    return Reason(
+        "Circular money routing detected: funds previously flowed from this payee back to "
+        "the payer, forming a closed transaction loop.",
+        keys,
+    )
+
+
 def _payee_ring(e: dict[str, Any]) -> Reason | None:
     n = e.get("graph.payee_owner_ring_size", 0)
     if n < 1:
@@ -192,8 +208,8 @@ def _signal(e: dict[str, Any]) -> Reason | None:
 
 RULES: tuple[Rule, ...] = (
     _known_fraud,
-    _takeover, _burst, _precedent, _payee_ring, _customer_ring, _fan_in, _amount, _drain, _velocity,
-    _new_payee, _new_context, _shared_device, _signal,
+    _takeover, _burst, _precedent, _cycle, _payee_ring, _customer_ring, _fan_in, _amount, _drain,
+    _velocity, _new_payee, _new_context, _shared_device, _signal,
 )  # fmt: skip
 
 

@@ -70,6 +70,20 @@ def test_template_reasons_are_grounded_and_strongest_first():
     assert "rule hit: takeover_pattern" in out.summary
 
 
+def test_circular_transfer_explanation():
+    e = {
+        "transaction.type": "TRANSFER",
+        "transaction.amount": 5000.0,
+        "transaction.currency": "TND",
+        "risk.score": 50,
+        "risk.level": "MEDIUM",
+        "graph.has_transfer_cycle": 1.0,
+        "rules.circular_transfer_pattern": True,
+    }
+    out = explain(e)
+    assert any("Circular money routing detected" in r.text for r in out.reasons)
+
+
 def test_fan_in_is_only_suspicious_for_a_customer_payee():
     graph = {"payee_payer_count": 120.0}
     to_customer = ev.build(_scored(graph=graph), CONFIG)

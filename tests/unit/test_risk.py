@@ -73,3 +73,23 @@ def test_no_signal_and_no_rule_is_an_error(config):
 def test_out_of_range_signal_rejected(config, bad):
     with pytest.raises(ValueError, match="must be in"):
         assess(RiskSignals(ml=bad, anomaly=0.5, graph=0.5), config)
+
+
+def test_circular_transfer_rule():
+    from fraudx.core.schemas import TransactionType
+    from fraudx.ml.vectorize import TYPE_CODES
+    from fraudx.scoring import rules
+
+    vals = {
+        "has_transfer_cycle": 1.0,
+        "transaction_type": TYPE_CODES[TransactionType.TRANSFER],
+        "is_new_device": 0.0,
+        "balance_drain_ratio": 0.1,
+        "is_new_country": 0.0,
+        "cust_txn_count_5m": 1.0,
+        "device_customer_count": 1.0,
+    }
+    fired = dict(rules.evaluate(vals))
+    assert "circular_transfer_pattern" in fired
+    assert fired["circular_transfer_pattern"] == RiskLevel.MEDIUM
+

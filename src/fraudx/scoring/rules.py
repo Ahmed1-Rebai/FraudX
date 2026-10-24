@@ -64,10 +64,16 @@ def _payee_confirmed_fraud(f: Values) -> Any:
     )
 
 
+def _circular_transfer_pattern(f: Values) -> Any:
+    """Directed money routing cycle (A -> B -> ... -> A) indicating circular layering."""
+    return (f.get("has_transfer_cycle") == 1) & (f["transaction_type"] == _TRANSFER)
+
+
 RULES: dict[str, tuple[RiskLevel, Any]] = {
     "takeover_pattern": (RiskLevel.HIGH, _takeover_pattern),
     "burst_on_shared_device": (RiskLevel.MEDIUM, _burst_on_shared_device),
     "payee_confirmed_fraud": (RiskLevel.MEDIUM, _payee_confirmed_fraud),
+    "circular_transfer_pattern": (RiskLevel.MEDIUM, _circular_transfer_pattern),
 }
 
 

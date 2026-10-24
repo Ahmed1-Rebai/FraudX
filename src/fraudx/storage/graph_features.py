@@ -94,22 +94,30 @@ _KNOWN_FRAUD = """
 UNWIND $rows AS row
 OPTIONAL MATCH (payee:Account {id: row.payee})
 OPTIONAL MATCH (payer:Account {id: row.payer})
-WITH row, payee, payer,
+WITH row, payee, payer, datetime({epochMillis: row.ts}) AS ts,
      payee IS NOT NULL AND coalesce(payee.kind, '') <> 'MERCHANT' AS customer_payee
 RETURN row.i AS i,
   coalesce(payer.fraud_flag, false) AS payer_confirmed_fraud,
   CASE
     WHEN NOT customer_payee THEN null
     WHEN coalesce(payee.fraud_flag, false) THEN 0
-    WHEN EXISTS { MATCH (payee)-[:TRANSFERRED_TO]-(:Account {fraud_flag: true}) } THEN 1
-    WHEN EXISTS { MATCH (payee)-[:TRANSFERRED_TO]-(m:Account)
-                        -[:TRANSFERRED_TO]-(:Account {fraud_flag: true})
-                  WHERE coalesce(m.kind, '') <> 'MERCHANT' } THEN 2
+    WHEN $any_confirmed
+         AND EXISTS { MATCH (payee)-[:TRANSFERRED_TO]-(:Account {fraud_flag: true}) } THEN 1
+    WHEN $any_confirmed AND EXISTS { MATCH (payee)-[:TRANSFERRED_TO]-(m:Account)
+                                          -[:TRANSFERRED_TO]-(:Account {fraud_flag: true})
+                                    WHERE coalesce(m.kind, '') <> 'MERCHANT' } THEN 2
   END AS distance_to_known_fraud,
-  CASE WHEN customer_payee
+  CASE WHEN customer_payee AND $any_confirmed
        THEN COUNT { MATCH (payee)-[:TRANSFERRED_TO]-(n:Account {fraud_flag: true})
                     RETURN DISTINCT n }
-       ELSE 0 END AS fraud_neighbor_count
+       ELSE 0 END AS fraud_neighbor_count,
+  CASE WHEN customer_payee AND payer IS NOT NULL
+       THEN EXISTS {
+         MATCH path = (payee)-[:TRANSFERRED_TO*1..3]->(payer)
+         WHERE all(r IN relationships(path) WHERE r.first_seen < ts)
+           AND none(n IN nodes(path) WHERE coalesce(n.kind, '') = 'MERCHANT')
+       }
+       ELSE false END AS has_transfer_cycle
 """
 
 
@@ -121,17 +129,18 @@ def known_fraud(
     Per event, only meaningful values are present: ``distance_to_known_fraud``
     (0 = the payee itself was confirmed, 1 or 2 hops through customer
     accounts), ``fraud_neighbor_count`` (confirmed accounts the payee traded
-    with) and ``payer_confirmed_fraud`` (the paying account was confirmed: a
-    mule moving money on). Merchant payees are skipped (hubs). While no
-    account has been confirmed, one indexed lookup answers for the batch.
+    with), ``payer_confirmed_fraud`` (the paying account was confirmed: a
+    mule moving money on) and ``has_transfer_cycle`` (circular money routing).
+    Merchant payees are skipped (hubs).
     """
     if not events:
         return []
     records, _, _ = driver.execute_query(_ANY_CONFIRMED, database_=database, routing_="r")
-    if not records[0]["any"]:
-        return [{} for _ in events]
+    any_confirmed = bool(records[0]["any"])
     rows = [{**_flow(e), "i": i} for i, e in enumerate(events)]
-    records, _, _ = driver.execute_query(_KNOWN_FRAUD, rows=rows, database_=database, routing_="r")
+    records, _, _ = driver.execute_query(
+        _KNOWN_FRAUD, rows=rows, any_confirmed=any_confirmed, database_=database, routing_="r"
+    )
     out: list[dict[str, float]] = [{} for _ in events]
     for record in records:
         values: dict[str, float] = {}
@@ -141,5 +150,7 @@ def known_fraud(
             values["fraud_neighbor_count"] = float(record["fraud_neighbor_count"])
         if record["payer_confirmed_fraud"]:
             values["payer_confirmed_fraud"] = 1.0
+        if record.get("has_transfer_cycle"):
+            values["has_transfer_cycle"] = 1.0
         out[record["i"]] = values
     return out
