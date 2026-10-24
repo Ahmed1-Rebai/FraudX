@@ -236,4 +236,3 @@ class FraudDecisionEvent(_Contract):
     @property
     def partition_key(self) -> bytes:
         return (self.customer_id or self.transaction_id).encode("utf-8")
-

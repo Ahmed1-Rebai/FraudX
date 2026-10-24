@@ -400,7 +400,6 @@ def test_decision_feeds_the_graph():
     assert event.status == "CONFIRMED_FRAUD"
 
 
-
 def test_predict_returns_the_scorer_decision_with_cited_reasons():
     client, stores = _client()
     stores.models = DETECTORS

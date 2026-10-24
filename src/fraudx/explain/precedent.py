@@ -82,14 +82,16 @@ def find_precedents(
         if sim >= min_similarity:
             expl = cand.get("explanation")
             summary = expl.get("summary") if isinstance(expl, dict) else None
-            matches.append({
-                "transaction_id": cand_id,
-                "status": cand.get("status", "CONFIRMED_FRAUD"),
-                "similarity": round(sim, 3),
-                "risk_score": cand.get("risk", {}).get("score", 0),
-                "summary": summary,
-                "analyst_note": cand.get("analyst_note"),
-            })
+            matches.append(
+                {
+                    "transaction_id": cand_id,
+                    "status": cand.get("status", "CONFIRMED_FRAUD"),
+                    "similarity": round(sim, 3),
+                    "risk_score": cand.get("risk", {}).get("score", 0),
+                    "summary": summary,
+                    "analyst_note": cand.get("analyst_note"),
+                }
+            )
 
     matches.sort(key=lambda m: m["similarity"], reverse=True)
     return matches[:limit]

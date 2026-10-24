@@ -88,16 +88,13 @@ def test_alert_handler_cites_similar_precedent():
         "analyst_note": "Account takeover verified",
     }
     db = FakeDb(investigations=[past_fraud])
-    handler = AlertHandler(
-        db, TemplateExplainer(), CONFIG, webhook_url=None, now=lambda: NOW
-    )
+    handler = AlertHandler(db, TemplateExplainer(), CONFIG, webhook_url=None, now=lambda: NOW)
     handler([Msg(_scored(["takeover_pattern"]))])
     doc = db.investigations.docs["TX-7"]
     assert "precedents" in doc and len(doc["precedents"]) == 1
     assert doc["precedents"][0]["transaction_id"] == "TX-OLD"
     assert doc["precedents"][0]["similarity"] >= 0.85
     assert any("TX-OLD" in r for r in doc["explanation"]["reasons"])
-
 
 
 def test_existing_investigation_keeps_the_analyst_decision():

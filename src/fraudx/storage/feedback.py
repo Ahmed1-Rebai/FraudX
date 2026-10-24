@@ -109,4 +109,3 @@ class FeedbackHandler:
 
             DECISIONS_PROCESSED.labels(status=event.status).inc()
         return rejects
-

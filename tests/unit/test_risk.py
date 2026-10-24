@@ -92,4 +92,3 @@ def test_circular_transfer_rule():
     fired = dict(rules.evaluate(vals))
     assert "circular_transfer_pattern" in fired
     assert fired["circular_transfer_pattern"] == RiskLevel.MEDIUM
-

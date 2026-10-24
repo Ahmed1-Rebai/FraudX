@@ -92,4 +92,3 @@ def test_fraud_decision_event():
     dumped = json.loads(event.model_dump_json())
     assert dumped["status"] == "CONFIRMED_FRAUD"
     assert FraudDecisionEvent.model_validate(dumped) == event
-
