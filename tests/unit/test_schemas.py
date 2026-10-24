@@ -68,3 +68,28 @@ def test_event_time_is_normalised_to_utc():
     assert event.event_time.utcoffset().total_seconds() == 0
     assert (event.event_time.hour, event.event_time.day) == (23, 28)
     assert str(to_values(event)["event_date"]) == "2026-02-28"
+
+
+def test_fraud_decision_event():
+    from datetime import UTC, datetime
+
+    from fraudx.core.schemas import FraudDecisionEvent, InvestigationStatus
+
+    now = datetime(2026, 10, 24, 21, 0, tzinfo=UTC)
+    event = FraudDecisionEvent(
+        transaction_id="TX-99",
+        status=InvestigationStatus.CONFIRMED_FRAUD,
+        customer_id="C-99",
+        source_account="A-1",
+        destination_account="A-2",
+        transaction_type="TRANSFER",
+        amount=150.0,
+        currency="TND",
+        note="confirmed mule",
+        decided_at=now,
+    )
+    assert event.partition_key == b"C-99"
+    dumped = json.loads(event.model_dump_json())
+    assert dumped["status"] == "CONFIRMED_FRAUD"
+    assert FraudDecisionEvent.model_validate(dumped) == event
+

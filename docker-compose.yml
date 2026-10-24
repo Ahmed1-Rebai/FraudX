@@ -351,6 +351,18 @@ services:
       mongodb:
         condition: service_healthy
 
+  feedback-writer:
+    <<: *worker
+    command: ["python", "-m", "fraudx.storage", "feedback"]
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      neo4j-init:
+        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
+
+
   # One-shot job (profile "jobs"): publish a dataset from ./data to transactions.raw.
   #   docker compose run --rm replay [--rate 500 --limit 10000]
   replay:

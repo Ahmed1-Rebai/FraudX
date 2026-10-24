@@ -36,3 +36,7 @@ logs/
 node_modules/
 frontend/dist/
 *.tsbuildinfo
+
+# Local task tracking
+TODO.md
+

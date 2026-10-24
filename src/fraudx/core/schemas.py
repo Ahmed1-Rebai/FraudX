@@ -205,3 +205,35 @@ class ScoredTransaction(_Contract):
     @property
     def partition_key(self) -> bytes:
         return self.event.partition_key
+
+
+class InvestigationStatus(StrEnum):
+    OPEN = "OPEN"
+    CONFIRMED_FRAUD = "CONFIRMED_FRAUD"
+    FALSE_POSITIVE = "FALSE_POSITIVE"
+    DISMISSED = "DISMISSED"
+
+
+class FraudDecisionEvent(_Contract):
+    """An analyst's decision on an investigation (``fraud.decisions``).
+
+    Published when an analyst updates an investigation status, decoupling
+    the synchronous REST write from graph feedback, retrain pipelines, and metrics.
+    """
+
+    schema_version: int = SCHEMA_VERSION
+    transaction_id: str
+    status: InvestigationStatus
+    customer_id: str | None = None
+    source_account: str | None = None
+    destination_account: str | None = None
+    transaction_type: str | None = None
+    amount: float | None = None
+    currency: str | None = None
+    note: str | None = None
+    decided_at: UtcDatetime
+
+    @property
+    def partition_key(self) -> bytes:
+        return (self.customer_id or self.transaction_id).encode("utf-8")
+

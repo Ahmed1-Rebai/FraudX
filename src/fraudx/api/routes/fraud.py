@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal
 
@@ -9,6 +10,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from fraudx.api.stores import Stores, get_stores
+from fraudx.core.schemas import FraudDecisionEvent, InvestigationStatus
+from fraudx.core.topics import FRAUD_DECISIONS
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/fraud", tags=["fraud"])
 
@@ -175,4 +180,20 @@ def decide(transaction_id: str, body: Decision, stores: StoresDep):
     if transaction is not None:
         feedback = stores.feedback().record(transaction, confirmed=body.status == "CONFIRMED_FRAUD")
         doc = cases.set_feedback(transaction_id, feedback) or doc
+        try:
+            event = FraudDecisionEvent(
+                transaction_id=transaction_id,
+                status=InvestigationStatus(body.status),
+                customer_id=transaction.get("customer_id") or doc.get("customer_id"),
+                source_account=transaction.get("source_account"),
+                destination_account=transaction.get("destination_account"),
+                transaction_type=transaction.get("transaction_type"),
+                amount=float(transaction["amount"]) if "amount" in transaction else None,
+                currency=transaction.get("currency"),
+                note=body.note,
+                decided_at=datetime.now(UTC),
+            )
+            stores.producer().send_model(FRAUD_DECISIONS, event, key=event.partition_key)
+        except Exception as exc:
+            log.warning("could not publish decision event to kafka", extra={"error": str(exc)})
     return doc

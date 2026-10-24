@@ -393,6 +393,12 @@ def test_decision_feeds_the_graph():
         client.patch("/fraud/TX-1", json={"status": "FALSE_POSITIVE"})
     assert confirmed["feedback"] == {"account": "A-9", "flagged": True, "confirmations": 1}
     assert stores.graph_feedback.calls == [("TX-1", True), ("TX-1", False)]
+    assert len(stores.kafka.sent) == 2
+    topic, event, _key = stores.kafka.sent[0]
+    assert topic == "fraud.decisions"
+    assert event.transaction_id == "TX-1"
+    assert event.status == "CONFIRMED_FRAUD"
+
 
 
 def test_predict_returns_the_scorer_decision_with_cited_reasons():

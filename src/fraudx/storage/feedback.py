@@ -14,12 +14,25 @@ this is how ``distance_to_known_fraud`` and ``fraud_neighbor_count`` (spec
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from neo4j import Driver
+from prometheus_client import Counter
 
-from fraudx.core.schemas import TransactionType
+from fraudx.core.schemas import FraudDecisionEvent, InvestigationStatus, TransactionType
+from fraudx.messaging.consumer import PermanentError, decode
 from fraudx.storage.graph_writer import account_kind
+
+if TYPE_CHECKING:
+    from confluent_kafka import Message
+
+    from fraudx.storage.investigations import Investigations
+
+DECISIONS_PROCESSED = Counter(
+    "fraudx_decisions_processed_total",
+    "Analyst decisions processed by the feedback worker",
+    ["status"],
+)
 
 _RECORD = """
 MERGE (a:Account {id: $account})
@@ -52,3 +65,48 @@ class GraphFeedback:
         )  # fmt: skip
         row = records[0]
         return {"account": account, "flagged": row["flagged"], "confirmations": row["sources"]}
+
+
+class FeedbackHandler:
+    """Batch consumer for ``fraud.decisions``."""
+
+    def __init__(
+        self, feedback: GraphFeedback, investigations: Investigations | None = None
+    ) -> None:
+        self.feedback = feedback
+        self.investigations = investigations
+
+    def __call__(self, messages: list[Message]) -> list[tuple[Message, PermanentError]]:
+        rejects: list[tuple[Message, PermanentError]] = []
+        for message in messages:
+            try:
+                event = decode(message, FraudDecisionEvent)
+            except PermanentError as exc:
+                rejects.append((message, exc))
+                continue
+
+            dest = event.destination_account
+            src = event.source_account
+            tx_type = event.transaction_type or TransactionType.TRANSFER.value
+
+            if not dest and self.investigations is not None:
+                doc = self.investigations.get(event.transaction_id)
+                if doc and "evidence" in doc:
+                    dest = doc["evidence"].get("destination_account")
+                    src = doc["evidence"].get("source_account")
+
+            if dest:
+                tx_data = {
+                    "transaction_id": event.transaction_id,
+                    "transaction_type": tx_type,
+                    "source_account": src or "",
+                    "destination_account": dest,
+                }
+                confirmed = event.status == InvestigationStatus.CONFIRMED_FRAUD.value
+                fb = self.feedback.record(tx_data, confirmed=confirmed)
+                if self.investigations is not None and fb is not None:
+                    self.investigations.set_feedback(event.transaction_id, fb)
+
+            DECISIONS_PROCESSED.labels(status=event.status).inc()
+        return rejects
+

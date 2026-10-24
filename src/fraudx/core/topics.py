@@ -11,6 +11,7 @@ TRANSACTIONS_FEATURES: Final = "transactions.features"
 TRANSACTIONS_SCORED: Final = "transactions.scored"
 TRANSACTIONS_DLQ: Final = "transactions.dlq"
 FRAUD_ALERTS: Final = "fraud.alerts"
+FRAUD_DECISIONS: Final = "fraud.decisions"
 
 ALL_TOPICS: Final = (
     TRANSACTIONS_RAW,
@@ -18,4 +19,5 @@ ALL_TOPICS: Final = (
     TRANSACTIONS_SCORED,
     TRANSACTIONS_DLQ,
     FRAUD_ALERTS,
+    FRAUD_DECISIONS,
 )

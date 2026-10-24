@@ -19,12 +19,14 @@ from fraudx.core.config import (
     get_app_settings,
 )
 from fraudx.core.logging import configure_logging
-from fraudx.core.topics import TRANSACTIONS_FEATURES, TRANSACTIONS_SCORED
+from fraudx.core.topics import FRAUD_DECISIONS, TRANSACTIONS_FEATURES, TRANSACTIONS_SCORED
 from fraudx.messaging.consumer import StreamWorker
 from fraudx.messaging.producer import EventProducer
 from fraudx.storage import clients
+from fraudx.storage.feedback import FeedbackHandler, GraphFeedback
 from fraudx.storage.graph_writer import GraphWriter
 from fraudx.storage.history_writer import HistoryWriter
+from fraudx.storage.investigations import Investigations
 from fraudx.storage.profile_writer import ProfileWriter
 from fraudx.storage.sink import ScoredSinkHandler, SinkHandler
 
@@ -49,12 +51,26 @@ def _profile(stack: ExitStack) -> ProfileWriter:
     return ProfileWriter(client[settings.db])
 
 
+def _feedback(stack: ExitStack) -> FeedbackHandler:
+    driver = clients.neo4j_driver(Neo4jSettings(), timeout_s=10)
+    stack.callback(driver.close)
+    mongo_settings = MongoSettings()
+    client = clients.mongo_client(mongo_settings, timeout_ms=10_000)
+    stack.callback(client.close)
+    return FeedbackHandler(
+        GraphFeedback(driver),
+        Investigations(client[mongo_settings.db]),
+    )
+
+
 # The graph is built from every featured transaction (the scorer reads it);
-# history and profiles are written once the transaction is scored (ADR-021).
+# history and profiles are written once the transaction is scored (ADR-021);
+# feedback consumes analyst decisions to mark confirmed fraud accounts.
 WRITERS: dict[str, tuple[Callable[[ExitStack], Any], str]] = {
     "graph": (_graph, TRANSACTIONS_FEATURES),
     "history": (_history, TRANSACTIONS_SCORED),
     "profile": (_profile, TRANSACTIONS_SCORED),
+    "feedback": (_feedback, FRAUD_DECISIONS),
 }
 
 
@@ -74,9 +90,13 @@ def main(argv: list[str] | None = None) -> int:
     with ExitStack() as stack:
         factory, topic = WRITERS[args.writer]
         writer = factory(stack)
-        handler = (
-            SinkHandler(writer) if topic == TRANSACTIONS_FEATURES else ScoredSinkHandler(writer)
-        )
+        if args.writer == "feedback":
+            handler = writer
+        else:
+            handler = (
+                SinkHandler(writer) if topic == TRANSACTIONS_FEATURES else ScoredSinkHandler(writer)
+            )
+
         worker = StreamWorker(
             name=name,
             topics=[topic],

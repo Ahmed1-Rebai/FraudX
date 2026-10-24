@@ -22,5 +22,6 @@ create transactions.features "$PARTITIONS" $((7 * DAY_MS))
 create transactions.scored   "$PARTITIONS" $((30 * DAY_MS))
 create transactions.dlq      1             $((30 * DAY_MS))
 create fraud.alerts          3             $((30 * DAY_MS))
+create fraud.decisions       3             $((30 * DAY_MS))
 
 "$TOPICS" --bootstrap-server "$BOOTSTRAP" --list
